@@ -1,0 +1,31 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, rgba32f) uniform readonly image2D currentImage;
+layout(binding = 1, rgba32f) uniform image2D historyImage;
+layout(binding = 2, rgba16f) uniform writeonly image2D resolvedImage;
+
+layout(push_constant) uniform Push {
+    uint previousSamples;
+    uint currentSamples;
+    uint resetHistory;
+} pc;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(currentImage)))) {
+        return;
+    }
+
+    vec4 current = imageLoad(currentImage, pixel);
+    uint previous = pc.resetHistory != 0u ? 0u : pc.previousSamples;
+    float total = float(previous + pc.currentSamples);
+    vec4 average = previous == 0u
+            ? current
+            : (imageLoad(historyImage, pixel) * float(previous)
+                    + current * float(pc.currentSamples)) / total;
+
+    imageStore(historyImage, pixel, average);
+    imageStore(resolvedImage, pixel, average);
+}

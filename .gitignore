@@ -1,0 +1,15 @@
+.gradle/
+/.gradle-user-home/
+/.toolchain/
+/.toolchain-downloads/
+.idea/
+/.superpowers/
+/build/
+/buildSrc/build/
+native/ngx_shim/build/
+run/
+out/
+*.log
+*.class
+third_party/
+bin/
