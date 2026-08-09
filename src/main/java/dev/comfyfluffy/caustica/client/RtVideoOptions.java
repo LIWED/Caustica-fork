@@ -40,6 +40,12 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            waterWaveStrength(),
+            waterFog(),
+            waterFogStrength(),
+            airFog(),
+            airFogStrength(),
+            volumetricLight(),
             dlssQuality(),
             hdrEnabled(),
             hdrPaperWhite(),
@@ -122,6 +128,51 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    private static OptionInstance<Integer> waterWaveStrength() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.WATER_WAVE_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.waterWaveStrength",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.waterWaveStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> waterFog() {
+        return bool("caustica.options.rt.waterFog", CausticaConfig.Rt.Composite.WATER_FOG);
+    }
+
+    private static OptionInstance<Integer> waterFogStrength() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.WATER_FOG_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.waterFogStrength",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.waterFogStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> airFog() {
+        return bool("caustica.options.rt.airFog", CausticaConfig.Rt.Composite.AIR_FOG);
+    }
+
+    private static OptionInstance<Integer> airFogStrength() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.AIR_FOG_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.airFogStrength",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.airFogStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> volumetricLight() {
+        return bool("caustica.options.rt.volumetricLight", CausticaConfig.Rt.Composite.VOLUMETRIC_LIGHT);
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR

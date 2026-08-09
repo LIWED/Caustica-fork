@@ -57,6 +57,7 @@ public struct PackedPathSegment {
 };
 
 public static const uint PATH_NO_NEXT = 0xffffffffu;
+public static const uint PATH_AIR_VOLUME_CONSUMED = 1u << 11u;
 
 public float2 octEncode(float3 direction) {
     float3 n = direction / max(abs(direction.x) + abs(direction.y) + abs(direction.z), 1.0e-20);

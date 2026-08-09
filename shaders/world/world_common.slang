@@ -47,7 +47,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit4 waves (bit1 was PBR-toggle, now unconditional)
+    public uint     flags;            // bit0 submerged, bit4 waves, bit5 water fog, bit6 air fog, bit7 shafts
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
@@ -56,8 +56,15 @@ public struct WorldPush {
     public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
+    public float4   weather;          // rain, thunder, hideLightningFlash-aware flash 0..1, cloud time
+    public float4   weatherColor;     // linear weather fog RGB, cloud layer height
+    // Full terrain-rebase X/Z in xy. Adding rebased ray coordinates restores a continuous world cloud
+    // domain; float precision becomes coarse only beyond the usual ~16-million-block exact-int range.
+    public float4   cloudAnchor;
+    public float4   airVolume;        // base density, height falloff, rebased base height, max distance
     public float4   waterParams;      // xyz camera-biome water tint, w wave time (s)
-    public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
+    public float4   waterAnchor;      // xy wave anchor, z previous wave time, w water-fog strength (0..2)
+    public float4   waterTuning;      // x wave strength 0..2, yzw reserved
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
     public BreakEntry breaking[8];    // Java capacity and breakCount serialization are generated from this

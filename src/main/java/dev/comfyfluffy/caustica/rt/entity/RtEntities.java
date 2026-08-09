@@ -21,6 +21,7 @@ import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -41,6 +42,7 @@ import dev.comfyfluffy.caustica.rt.RtGpuExecutor.GraphicsUseWaiter;
 import dev.comfyfluffy.caustica.rt.RtGpuExecutor.TrackedGraphicsUse;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
+import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -91,7 +93,12 @@ public final class RtEntities {
     /** Default mask: visible to every ray (terrain and ordinary entities use this). */
     private static final int MASK_ALL = 0xFF;
     /** Particles are primary-ray-only: visible/lit by the camera path, invisible to shadows/GI/reflections. */
-    private static final int PARTICLE_MASK = MASK_PRIMARY;
+    public static final int PARTICLE_MASK = MASK_PRIMARY;
+    private static final int WEATHER_ALPHA_FLAG = 1 << 30;
+    private static final Identifier RAIN_TEXTURE = Identifier.fromNamespaceAndPath(
+            "minecraft", "textures/environment/rain.png");
+    private static final Identifier SNOW_TEXTURE = Identifier.fromNamespaceAndPath(
+            "minecraft", "textures/environment/snow.png");
     public static boolean particlesEnabled() {
         return CausticaConfig.Rt.Entities.PARTICLES_ENABLED.value();
     }
@@ -195,6 +202,12 @@ public final class RtEntities {
     private IdentityHashMap<Particle, ParticlePrev> particlePrev = new IdentityHashMap<>();
     private IdentityHashMap<Particle, ParticlePrev> particleCur = new IdentityHashMap<>();
     private final float[] particleCenterScratch = new float[3];
+    private volatile RtWeatherSnapshot weatherSnapshot = RtWeatherSnapshot.empty(0L);
+
+    /** Capture only after the renderer has decided to cancel vanilla world rendering. */
+    public void captureWeather(net.minecraft.client.renderer.state.level.WeatherRenderState state) {
+        weatherSnapshot = RtWeatherSnapshot.capture(state, RtComposite.frameCounter());
+    }
 
     /** Previous frame's particle center (rebase-space) + that frame's rebase origin, for the MV diff. */
     private static final class ParticlePrev {
@@ -607,7 +620,9 @@ public final class RtEntities {
      */
     public FrameEntities beginFrame(RtContext ctx, List<RtAccel.Instance> base, int rbx, int rby, int rbz,
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
-        if (!enabled()) {
+        boolean dynamicEnabled = enabled();
+        RtWeatherSnapshot weather = weatherSnapshot;
+        if (!dynamicEnabled && weather.isEmpty()) {
             return new FrameEntities(base, List.of(), List.of(), 0L, null);
         }
         Minecraft mc = Minecraft.getInstance();
@@ -620,14 +635,19 @@ public final class RtEntities {
 
         FrameBuild build = new FrameBuild(base, ctx.gpuExecutor());
         try {
-            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.capture")) {
-                captureEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
+            if (dynamicEnabled) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.capture")) {
+                    captureEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
+                }
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blockEntities")) {
+                    captureBlockEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
+                }
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.particles")) {
+                    captureParticles(ctx, build, mc, partial, rbx, rby, rbz, projection, viewRotation);
+                }
             }
-            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blockEntities")) {
-                captureBlockEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
-            }
-            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.particles")) {
-                captureParticles(ctx, build, mc, partial, rbx, rby, rbz, projection, viewRotation);
+            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.weather")) {
+                captureWeatherMesh(ctx, build, weather, rbx, rby, rbz, camX, camZ);
             }
         } catch (RuntimeException | Error t) {
             // A partially recorded frame may already have installed unbuilt BLAS into persistent slots.
@@ -1026,6 +1046,51 @@ public final class RtEntities {
         long dispAddr = uploadDisp(ctx, build, particleDisp);
         appendCapture(ctx, build, new Motion(dispAddr, 0f, 0f, 0f),
                 -1, PARTICLE_BIT, PARTICLE_MASK, IDENTITY); // one combined mesh, per-particle MV
+    }
+
+    /** Convert the immutable vanilla snapshot into one primary-only crossed-quad mesh and transient BLAS. */
+    private void captureWeatherMesh(RtContext ctx, FrameBuild build, RtWeatherSnapshot snapshot,
+                                    int rbx, int rby, int rbz, double cameraX, double cameraZ) {
+        RtWeatherSnapshot.Mesh weather = snapshot.mesh(rbx, rby, rbz, cameraX, cameraZ);
+        if (weather.quads().isEmpty()) {
+            return;
+        }
+        capture.reset(weather.quads().size() * 4);
+        capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+        capture.currentFlags = WEATHER_ALPHA_FLAG;
+        capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(true);
+        RtWeatherSnapshot.Kind currentKind = null;
+        int textureSlot = 0;
+        for (RtWeatherSnapshot.Quad quad : weather.quads()) {
+            if (quad.kind() != currentKind) {
+                currentKind = quad.kind();
+                textureSlot = RtEntityTextures.INSTANCE.slotForTexture(
+                        currentKind == RtWeatherSnapshot.Kind.RAIN ? RAIN_TEXTURE : SNOW_TEXTURE);
+                capture.currentTexSlot = textureSlot;
+            }
+            if (textureSlot == 0) {
+                continue; // slot 0 is the block atlas; never render weather with the wrong texture
+            }
+            List<RtWeatherSnapshot.Vertex> vertices = quad.vertices();
+            capture.currentAux0 = vertices.getFirst().alpha();
+            for (RtWeatherSnapshot.Vertex vertex : vertices) {
+                int block = vertex.lightCoords() & 0xFFFF;
+                int sky = (vertex.lightCoords() >>> 16) & 0xFFFF;
+                int light = Math.round(Math.max(block, sky) * (255.0f / 240.0f));
+                light = Math.max(0, Math.min(255, light));
+                int color = (Math.round(vertex.alpha() * 255.0f) << 24)
+                        | (light << 16) | (light << 8) | light;
+                capture.addVertex(vertex.x(), vertex.y(), vertex.z(), color, vertex.u(), vertex.v(),
+                        0, 0, 0.0f, 0.0f, 0.0f);
+            }
+        }
+        if (!capture.isEmpty()) {
+            build.logicalCount += snapshot.rainColumns().size() + snapshot.snowColumns().size();
+            appendCapture(ctx, build, NO_MOTION, -1,
+                    PARTICLE_BIT, PARTICLE_MASK, IDENTITY);
+            RtFrameStats.FRAME.count("weatherColumnsCaptured",
+                    snapshot.rainColumns().size() + snapshot.snowColumns().size());
+        }
     }
 
     /** Average (rebase-space) position of a captured particle's verts — approximates the particle center. */
@@ -1933,7 +1998,7 @@ public final class RtEntities {
     }
 
     private void ensureResources(RtContext ctx) {
-        int requiredCapacity = maxEntities();
+        int requiredCapacity = Math.max(1, maxEntities() + 1); // one combined weather mesh is independent
         if (tableRing != null && tableCapacity >= requiredCapacity) {
             return;
         }

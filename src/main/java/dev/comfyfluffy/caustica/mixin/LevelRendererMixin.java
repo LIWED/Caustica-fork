@@ -3,6 +3,7 @@ package dev.comfyfluffy.caustica.mixin;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.resource.GraphicsResourceAllocator;
 import dev.comfyfluffy.caustica.client.VanillaRenderController;
+import dev.comfyfluffy.caustica.rt.entity.RtEntities;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -45,11 +46,12 @@ public abstract class LevelRendererMixin {
 			}
 		}
 
-		if (!VanillaRenderController.INSTANCE.shouldCancelLevelRenderer(waitingForRtPlayerSection)) {
-			return;
-		}
+        if (!VanillaRenderController.INSTANCE.shouldCancelLevelRenderer(waitingForRtPlayerSection)) {
+            return;
+        }
 
-		VanillaRenderController.INSTANCE.markWorldSkipped();
+        RtEntities.INSTANCE.captureWeather(this.levelRenderState.weatherRenderState);
+        VanillaRenderController.INSTANCE.markWorldSkipped();
 		ci.cancel();
 	}
 }

@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Acqua animata",
 	"caustica.options.rt.waterWaves.tooltip": "Anima le normali della superficie dell'acqua per riflessi di onde in movimento.",
 
+	"caustica.options.rt.waterFog": "Nebbia subacquea",
+	"caustica.options.rt.waterFog.tooltip": "Aggiunge foschia in profondità e raggi del sole o della luna occlusi dalla geometria quando si guarda attraverso l'acqua. L'assorbimento dell'acqua resta attivo se disabilitato.",
+
 	"caustica.options.rt.hdr": "Uscita HDR",
 	"caustica.options.rt.hdr.tooltip": "Presenta in HDR (ST.2084/PQ) invece che in SDR, quando il display lo supporta. Ha effetto dopo il riavvio del gioco.",
 

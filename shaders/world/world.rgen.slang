@@ -25,12 +25,14 @@ import medium;
 import segment;
 import water;
 import trace;
+import water_volume;
+import air_volume;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
 #endif
 import lighting;
 
-public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
+public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVolumeConsumed) {
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
     float3 rd = seg.rd;
@@ -58,6 +60,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // a dielectric it is whatever the parent was travelling through.
     MediumStack medium = seg.medium;
     bool waterWaves = (worldPush.flags & 16u) != 0u; // animated wave-normal perturbation
+    float waterWaveStrength = waterWaves ? clamp(worldPush.waterTuning.x, 0.0, 2.0) : 0.0;
+    bool waterFog = (worldPush.flags & 32u) != 0u; // water-medium haze + directional Tyndall scattering
+    float waterFogStrength = clamp(worldPush.waterAnchor.w, 0.0, 2.0);
     // Sky-disc gate (see world.rmiss): the sun/moon disc is shown to the primary ray and to rays spawned
     // by a specular/dielectric bounce (mirror reflections + refractions of the sun/moon), but hidden from
     // diffuse-sampled continuation rays — those are already covered by the sun NEE, so the tiny disc
@@ -85,6 +90,29 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
+        float segmentDistance = payload.hitT < 0.0 ? 10000.0 : payload.hitT;
+        bool skipConsumedCameraSegment = airVolumeConsumed && bounce == 0;
+        if (mediumIsAir(medium.current) && !skipConsumedCameraSegment) {
+            AirVolumeResult air = integrateAirVolume(ro, rd, segmentDistance, false, seed);
+            L += throughput * air.radiance;
+            throughput *= air.transmittance;
+        }
+        airVolumeConsumed = false;
+        if (any(medium.current.extinction > 0.0)) {
+            float3 effectiveExtinction = waterEffectiveExtinction(
+                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+            float3 segmentTransmittance = exp(-effectiveExtinction * segmentDistance);
+            if (medium.current.water && waterFog && waterFogStrength > 0.0) {
+                float3 rawLightDirForWater = worldPush.lightDir.xyz;
+                float lightDirLengthSq = dot(rawLightDirForWater, rawLightDirForWater);
+                float3 lightDirForWater = rawLightDirForWater * rsqrt(max(lightDirLengthSq, 1.0e-8));
+                L += throughput * integrateWaterSingleScatter(
+                        ro, rd, segmentDistance, effectiveExtinction, segmentTransmittance,
+                        worldPush.lightRadiance.xyz, lightDirForWater, waterFogStrength, seed);
+            }
+            throughput *= segmentTransmittance;
+        }
+
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
@@ -97,10 +125,6 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
         // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
         // the ordinary case costs one comparison.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
-        }
-
         float3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
         float3 hitPos = ro + rd * payload.hitT;
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
@@ -128,15 +152,15 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float3 tint = payload.albedo;
             float transmission = clamp(payloadTransmission(), 0.0, 1.0);
 
-            // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
-            // reflections, wobbling refraction. The wave domain is world-stable: rebased hit XZ plus the
-            // pushed anchor (terrain origin mod 4096) survives the per-move terrain rebase.
+            // Ripple the (near-flat) surface normal for Fresnel and reflection glints. Water transmission
+            // uses its independently bounded low-frequency role. The pushed anchor (terrain origin mod
+            // 4096) survives the per-move terrain rebase.
             float3 geometricNormal = n; // unrippled; ray origins offset along this
-            if (isWater && waterWaves) {
-                float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
-                float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+            float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+            float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+            if (isWater) {
                 n = applyWaterWaves(geometricNormal, waterDomain,
-                                    worldPush.waterParams.w, waterFootprint);
+                        worldPush.waterParams.w, waterFootprint, waterWaveStrength);
             }
 
             // The medium this face opens into, and the one it returns to on the way out — which is what
@@ -147,7 +171,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
             float cosI = clamp(dot(-rd, n), 0.0, 1.0);
             float F = fresnelDielectric(cosI, etaI, etaT);
-            float3 transmittedDir = refract(rd, n, etaI / etaT);
+            float3 refractionNormal = isWater ? waterRefractionNormal(
+                    geometricNormal, waterDomain, worldPush.waterParams.w,
+                    waterFootprint, waterWaveStrength) : n;
+            float3 transmittedDir = refract(rd, refractionNormal, etaI / etaT);
+            if (dot(transmittedDir, transmittedDir) <= 0.0) {
+                F = 1.0;
+            }
             // The translucent terrain layer is recessed by TRANSLUCENT_INSET (RtTerrainMesher), so a
             // glass/ice face touching a slab or stair sits a hair behind that neighbour's surface. A full
             // SURF_BIAS would restart the transmitted ray past the neighbour and see through it. Water
@@ -267,7 +297,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // extent (worldPush.lightDir.w half-angle) so the shadow ray samples the light's quad — soft penumbrae
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
-        float3 lightDir = worldPush.lightDir.xyz;
+        float3 causticLightDir = normalize(worldPush.lightDir.xyz);
+        float3 lightDir = causticLightDir;
         float lightHalfAngle = worldPush.lightDir.w;
         if (lightHalfAngle > 0.0) {
             lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
@@ -280,7 +311,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
             if (medium.current.water && waterWaves && shadow.waterHitT > 0.0) {
-                vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
+                float causticDepth = shadow.waterHitT * max(lightDir.y, 0.0);
+                vis *= waterCaustic(p, causticLightDir, causticDepth, waterWaveStrength);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                 float3 brdf = diffAlb * INV_PI; // Lambertian diffuse (f = albedo/PI)
@@ -322,8 +354,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
                 if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {
-                    visB *= waterCaustic(hitPos + lightDir * shadowBack.waterHitT,
-                                         lightDir, shadowBack.waterHitT);
+                    float causticDepthBack = shadowBack.waterHitT * max(lightDir.y, 0.0);
+                    visB *= waterCaustic(
+                            hitPos, causticLightDir, causticDepthBack, waterWaveStrength);
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
@@ -397,18 +430,20 @@ void main() {
     uint spp = max(worldPush.spp, 1u);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
+    float3 prefixRadiance = outImage[pix].xyz;
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
+        bool airVolumeConsumed = (packed.pathFlags & PATH_AIR_VOLUME_CONSUMED) != 0u;
         for (uint s = 0u; s < spp; ++s) {
-            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
+            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp, airVolumeConsumed);
         }
         if (packed.nextRecord == PATH_NO_NEXT) {
             break;
         }
         recordIndex = packed.nextRecord;
     }
-    outImage[pix] = float4(frameRadiance / float(spp), 1.0);
+    outImage[pix] = float4(prefixRadiance + frameRadiance / float(spp), 1.0);
 }

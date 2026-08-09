@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "動態水面",
 	"caustica.options.rt.waterWaves.tooltip": "對水面法線進行動畫處理，以顯示移動波浪高光。",
 
+	"caustica.options.rt.waterFog": "水體霧氣",
+	"caustica.options.rt.waterFog.tooltip": "觀察水體時增加距離霧，並顯示受建築和地形遮擋的太陽或月亮光束。關閉後仍保留深水吸收。",
+
 	"caustica.options.rt.hdr": "HDR 輸出",
 	"caustica.options.rt.hdr.tooltip": "當顯示器支援時，以 HDR (ST.2084/PQ) 而不是 SDR 顯示。重新啟動遊戲後生效。",
 

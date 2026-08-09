@@ -11,11 +11,13 @@ import math;
 import medium;
 import water;
 import trace;
+import water_volume;
 
 public static float3 gv_normal = float3(0.0, 0.0, 0.0);
 public static float3 gv_albedo = float3(0.0, 0.0, 0.0);
 public static float gv_rough = 0.0;
 public static float3 gv_hitCamRel = float3(0.0, 0.0, 0.0);       // primary-surface hit position relative to the current camera
+public static float3 gv_previousHitCamRel = float3(0.0, 0.0, 0.0); // previous optical endpoint, before endpoint object motion
 public static bool gv_motionUseRefracted = false; // true when the MV tracks the refracted hit (its own reprojection delta)
 // World-space displacement of the motion-guide surface since the previous frame (0 for static
 // terrain/sky, an entity's per-vertex/object motion for a dynamic hit).
@@ -139,9 +141,11 @@ public float2 resolveSpecularGuides(SpecSurface surface, float3 primaryDir,
     return prevValid ? (prevNdc - currentNdc) * 0.5 * size : float2(0.0, 0.0);
 }
 
-public void setTransmissionGuide(float3 hitCamRel, float3 motionPrev, float3 normal,
+public void setTransmissionGuide(float3 hitCamRel, float3 previousHitCamRel,
+                          float3 motionPrev, float3 normal,
                           float roughness, float3 diffuseAlbedo) {
     gv_hitCamRel = hitCamRel;
+    gv_previousHitCamRel = previousHitCamRel;
     gv_motionObjDisp = motionPrev;
     gv_motionUseRefracted = true;
     gv_normal = normal;
@@ -152,34 +156,57 @@ public void setTransmissionGuide(float3 hitCamRel, float3 motionPrev, float3 nor
 // Deterministic ordinary guide behind the first transmitted interface. This is guide-only work:
 // radiance reflection/transmission continuations are queued at the first split and traced by Pass B.
 public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
+                              float3 previousTransmittedDir,
                               float3 surfaceBiasNormal, MediumStack medium, float rayBias,
                               float rayConeWidth, float rayConeSpread, float3 guideFilter) {
     if (dot(transmittedDir, transmittedDir) <= 0.0) return;
 
     float3 direction = normalize(transmittedDir);
+    bool previousOpticalValid = dot(previousTransmittedDir, previousTransmittedDir) > 0.0;
+    float3 previousDirection = previousOpticalValid
+            ? normalize(previousTransmittedDir) : direction;
     float3 ro = offsetSurfaceOrigin(surfacePos, surfaceBiasNormal, direction, rayBias);
+    float3 previousRo = offsetSurfaceOrigin(
+            surfacePos, surfaceBiasNormal, previousDirection, rayBias);
 
     // The camera interface consumed bounce 0; the remaining configured bounce budget is the natural
     // cap for deterministic guide crossings too.
     for (uint crossing = 0u; crossing < worldPush.maxBounces; ++crossing) {
         traceGuide(CULL_PRIMARY, ro, RAY_TMIN, direction, 10000.0,
                 rayConeWidth, rayConeSpread);
+        float segmentDistance = payload.hitT > 0.0 ? payload.hitT : 10000.0;
+        if (any(medium.current.extinction > 0.0)) {
+            bool waterFog = (worldPush.flags & 32u) != 0u;
+            float waterFogStrength = clamp(worldPush.waterAnchor.w, 0.0, 2.0);
+            float3 effectiveExtinction = waterEffectiveExtinction(
+                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+            guideFilter *= exp(-effectiveExtinction * segmentDistance);
+        }
         if (payload.hitT <= 0.0) {
-            setTransmissionGuide((ro + direction * 1.0e6) - worldPush.camOffset,
+            float3 endpoint = ro + direction * 1.0e6;
+            float3 previousEndpoint = previousRo + previousDirection * 1.0e6;
+            if (!previousOpticalValid) previousEndpoint = endpoint;
+            setTransmissionGuide(endpoint - worldPush.camOffset,
+                    previousEndpoint - worldPush.camOffset,
                     float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), 1.0,
                     guideFilter * SKY_DIFF_ALBEDO);
             return;
         }
 
+        rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0),
+                           RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         float3 interfacePos = ro + direction * payload.hitT;
+        float3 previousInterfacePos = previousRo + previousDirection * payload.hitT;
         if (material == MATERIAL_OPAQUE || material == MATERIAL_PARTICLE) {
             float endpointRoughness = material == MATERIAL_PARTICLE
                     ? 1.0 : clamp(payloadRoughness(), 0.0, 1.0);
             float3 endpointAlbedo = material == MATERIAL_PARTICLE
                     ? payload.albedo
                     : payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
-            setTransmissionGuide(interfacePos - worldPush.camOffset, payload.motionPrev,
+            if (!previousOpticalValid) previousInterfacePos = interfacePos;
+            setTransmissionGuide(interfacePos - worldPush.camOffset,
+                    previousInterfacePos - worldPush.camOffset, payload.motionPrev,
                     payload.normal, endpointRoughness, guideFilter * endpointAlbedo);
             return;
         }
@@ -189,28 +216,45 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         bool entering = payloadDielectricEntering();
         float3 geometricNormal = normalize(payload.normal);
         float3 interfaceNormal = geometricNormal;
-        if (isWater && (worldPush.flags & 16u) != 0u) {
-            float waterFootprint = rayConeWidth
-                    / max(abs(dot(-direction, geometricNormal)), 0.2);
+        bool waterWaves = (worldPush.flags & 16u) != 0u;
+        float waterWaveStrength = waterWaves
+                ? clamp(worldPush.waterTuning.x, 0.0, 2.0) : 0.0;
+        float waterFootprint = rayConeWidth
+                / max(abs(dot(-direction, geometricNormal)), 0.2);
+        float previousWaterFootprint = rayConeWidth
+                / max(abs(dot(-previousDirection, geometricNormal)), 0.2);
+        if (isWater) {
             interfaceNormal = applyWaterWaves(geometricNormal,
                     interfacePos.xz + worldPush.waterAnchor.xy,
-                    worldPush.waterParams.w, waterFootprint);
+                    worldPush.waterParams.w, waterFootprint, waterWaveStrength);
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
         Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0),
                                               payload.albedo, transmission);
         float etaT = entering ? entered.ior : medium.outer.ior;
-        float3 nextDirection = refract(direction, interfaceNormal, medium.current.ior / etaT);
+        float3 refractionNormal = isWater ? waterRefractionNormal(
+                geometricNormal, interfacePos.xz + worldPush.waterAnchor.xy,
+                worldPush.waterParams.w, waterFootprint, waterWaveStrength) : interfaceNormal;
+        float3 previousRefractionNormal = isWater ? waterRefractionNormal(
+                geometricNormal, previousInterfacePos.xz + worldPush.waterAnchor.xy,
+                worldPush.waterAnchor.z, previousWaterFootprint, waterWaveStrength) : interfaceNormal;
+        float3 nextDirection = refract(direction, refractionNormal, medium.current.ior / etaT);
         if (dot(nextDirection, nextDirection) <= 0.0) {
             // Never let a TIR reflection become ordinary diffuse/depth.
+            if (!previousOpticalValid) previousInterfacePos = interfacePos;
             setTransmissionGuide(interfacePos - worldPush.camOffset,
+                    previousInterfacePos - worldPush.camOffset,
                     isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
                     interfaceNormal, 0.0, float3(0.0, 0.0, 0.0));
             return;
         }
-        if (!isWater && entering) {
-            guideFilter *= payload.albedo;
+        float3 previousNextDirection = refract(
+                previousDirection, previousRefractionNormal, medium.current.ior / etaT);
+        if (previousOpticalValid
+                && dot(previousNextDirection, previousNextDirection) <= 0.0) {
+            previousOpticalValid = false;
+            previousDirection = normalize(nextDirection);
         }
         if (entering) {
             mediumPush(medium, entered);
@@ -220,6 +264,14 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         direction = normalize(nextDirection);
         ro = offsetSurfaceOrigin(interfacePos, geometricNormal, direction,
                 isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS);
+        if (previousOpticalValid) {
+            previousDirection = normalize(previousNextDirection);
+            previousRo = offsetSurfaceOrigin(previousInterfacePos, geometricNormal,
+                    previousDirection, isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS);
+        } else {
+            previousDirection = direction;
+            previousRo = ro;
+        }
     }
 }
 
@@ -244,8 +296,10 @@ public void writeGuides(int2 pix, float3 primaryDir, float2 jndc, float2 size, f
     // what DLSS expects with MVJittered unset. Scaled from NDC into render-pixel space.
     // For a dynamic surface, previous-frame position is the current point minus its world-space
     // displacement; subtracting gv_motionObjDisp de-cameras the MV.
+    float3 previousMotionCamRel = gv_motionUseRefracted
+            ? gv_previousHitCamRel : gv_hitCamRel;
     float4 prevClip = mul(worldPush.prevViewProj,
-            float4(gv_hitCamRel + worldPush.camDelta - gv_motionObjDisp, 1.0));
+            float4(previousMotionCamRel + worldPush.camDelta - gv_motionObjDisp, 1.0));
     float2 curNdc = jndc; // primary hit's current screen position is exactly the jittered ray ndc
     // Transmitted content is its own feature: compare its previous and current projections rather than
     // subtracting the primary interface's jittered NDC.

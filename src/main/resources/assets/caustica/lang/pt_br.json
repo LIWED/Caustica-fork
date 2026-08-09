@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Água animada",
 	"caustica.options.rt.waterWaves.tooltip": "Anima as normais da superfície da água para brilhos de ondas em movimento.",
 
+	"caustica.options.rt.waterFog": "Névoa aquática",
+	"caustica.options.rt.waterFog.tooltip": "Adiciona névoa de profundidade e raios do sol ou da lua ocluídos pela geometria ao olhar através da água. A absorção da água permanece ativa quando desativado.",
+
 	"caustica.options.rt.hdr": "Saída HDR",
 	"caustica.options.rt.hdr.tooltip": "Apresenta em HDR (ST.2084/PQ) em vez de SDR quando a tela oferece suporte. Entra em vigor após reiniciar o jogo.",
 

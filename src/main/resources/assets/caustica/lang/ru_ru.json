@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Анимированная вода",
 	"caustica.options.rt.waterWaves.tooltip": "Анимирует нормали поверхности воды для движущихся бликов волн.",
 
+	"caustica.options.rt.waterFog": "Подводный туман",
+	"caustica.options.rt.waterFog.tooltip": "Добавляет глубинную дымку и лучи солнца или луны, перекрываемые геометрией, при взгляде сквозь воду. Поглощение воды остаётся активным при отключении.",
+
 	"caustica.options.rt.hdr": "Вывод HDR",
 	"caustica.options.rt.hdr.tooltip": "Отображает в HDR (ST.2084/PQ) вместо SDR, если дисплей поддерживает это. Вступает в силу после перезапуска игры.",
 

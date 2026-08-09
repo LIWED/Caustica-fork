@@ -1,5 +1,9 @@
 # Caustica
 
+> **Unofficial experimental branch.** This `0.4.3` branch is maintained by LIWED from
+> [ComfyFluffy/Caustica](https://github.com/ComfyFluffy/Caustica) and is not an official release.
+> Night-time caustic gating and deep-water reflection/visibility still need further visual tuning.
+
 Caustica is an experimental ray-traced renderer for Minecraft 26.2's Vulkan backend.
 It replaces the vanilla world view with hardware ray tracing and NVIDIA DLSS
 features while keeping Minecraft's familiar UI and gameplay intact.

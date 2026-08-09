@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "애니메이션 물",
 	"caustica.options.rt.waterWaves.tooltip": "움직이는 물결 하이라이트를 위해 물 표면 노멀을 애니메이션합니다.",
 
+	"caustica.options.rt.waterFog": "수중 안개",
+	"caustica.options.rt.waterFog.tooltip": "물을 통해 볼 때 거리 안개와 지형 및 건축물에 가려지는 태양 또는 달빛 기둥을 추가합니다. 꺼도 물의 깊이 흡수는 유지됩니다.",
+
 	"caustica.options.rt.hdr": "HDR 출력",
 	"caustica.options.rt.hdr.tooltip": "디스플레이가 지원하는 경우 SDR 대신 HDR(ST.2084/PQ)로 표시합니다. 게임을 다시 시작한 뒤 적용됩니다.",
 

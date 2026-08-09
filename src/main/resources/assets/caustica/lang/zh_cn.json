@@ -29,6 +29,18 @@
 
 	"caustica.options.rt.waterWaves": "动态水面",
 	"caustica.options.rt.waterWaves.tooltip": "对水面法线进行动画处理，以显示移动波浪高光。",
+	"caustica.options.rt.waterWaveStrength": "水波幅度",
+	"caustica.options.rt.waterWaveStrength.tooltip": "控制十二层水面/反射波、低频有界八层折射波和十二层物理焦散。0% 回退到几何法线与中性焦散；100% 为默认值；200% 将幅度加倍。",
+	"caustica.options.rt.waterFog": "水体雾气",
+	"caustica.options.rt.waterFog.tooltip": "观察水体时增加距离雾，并显示受建筑和地形遮挡的太阳或月亮光束。关闭后仍保留深水吸收。",
+	"caustica.options.rt.waterFogStrength": "水雾强度",
+  "caustica.options.rt.waterFogStrength.tooltip": "调整水下翠绿/青蓝雾气和丁达尔光束；水体直接吸收与深水透射保持不变。",
+	"caustica.options.rt.airFog": "空气体积雾",
+	"caustica.options.rt.airFog.tooltip": "为空气路径加入随高度变化的自然距离雾。",
+	"caustica.options.rt.airFogStrength": "空气雾强度",
+	"caustica.options.rt.airFogStrength.tooltip": "在清澈空气和浓雾之间调整空气雾密度。",
+	"caustica.options.rt.volumetricLight": "体积光",
+	"caustica.options.rt.volumetricLight.tooltip": "在空气雾中加入受地形遮挡的太阳和月亮光柱。",
 
 	"caustica.options.rt.hdr": "HDR 输出",
 	"caustica.options.rt.hdr.tooltip": "当显示器支持时，以 HDR (ST.2084/PQ) 而不是 SDR 显示。重启游戏后生效。",

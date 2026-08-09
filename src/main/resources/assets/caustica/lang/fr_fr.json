@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Eau animée",
 	"caustica.options.rt.waterWaves.tooltip": "Anime les normales de surface de l'eau pour des reflets de vagues en mouvement.",
 
+	"caustica.options.rt.waterFog": "Brume aquatique",
+	"caustica.options.rt.waterFog.tooltip": "Ajoute une brume de profondeur et des rayons du soleil ou de la lune masqués par la géométrie à travers l'eau. L'absorption de l'eau reste active si l'option est désactivée.",
+
 	"caustica.options.rt.hdr": "Sortie HDR",
 	"caustica.options.rt.hdr.tooltip": "Présente en HDR (ST.2084/PQ) au lieu du SDR lorsque l'écran le prend en charge. Prend effet après le redémarrage du jeu.",
 

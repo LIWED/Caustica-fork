@@ -67,6 +67,8 @@ public final class RtEntityTextures {
     // Atlas-location → bindless slot, for items/blocks (which texture from an atlas, not a per-type
     // file). Seeded with the block atlas = slot 0 (also the fallback). Items use a separate item atlas.
     private final Map<Identifier, Integer> atlasSlotCache = new HashMap<>();
+    // Standalone resources (weather/entity-style full textures), deliberately separate from atlas lookup.
+    private final Map<Identifier, Integer> textureSlotCache = new HashMap<>();
     private final List<Pending> pending = new ArrayList<>(); // albedo slots awaiting descriptor upload
     // Descriptor array capacity of the currently alive world pipeline. A higher config value applies after
     // reset/recreate; a lower value stops allocating new slots immediately without invalidating old ones.
@@ -130,6 +132,31 @@ public final class RtEntityTextures {
         }
         int slot = slotForView(view);
         atlasSlotCache.put(atlasLocation, slot);
+        return slot;
+    }
+
+    /** Bindless slot for a standalone full texture such as environment/rain.png (never the block atlas). */
+    public int slotForTexture(Identifier textureLocation) {
+        if (textureLocation == null) {
+            return 0;
+        }
+        Integer cached = textureSlotCache.get(textureLocation);
+        if (cached != null) {
+            return cached;
+        }
+        long view = 0L;
+        try {
+            GpuTextureView textureView = Minecraft.getInstance().getTextureManager()
+                    .getTexture(textureLocation).getTextureView();
+            view = vkImageView(textureView);
+        } catch (Throwable t) {
+            if (!loggedFailure) {
+                loggedFailure = true;
+                CausticaMod.LOGGER.warn("RT standalone texture resolution failed for {}", textureLocation, t);
+            }
+        }
+        int slot = slotForView(view);
+        textureSlotCache.put(textureLocation, slot);
         return slot;
     }
 
@@ -198,6 +225,7 @@ public final class RtEntityTextures {
         locationCache.clear();
         viewSlotCache.clear();
         atlasSlotCache.clear();
+        textureSlotCache.clear();
         atlasSlotCache.put(TextureAtlas.LOCATION_BLOCKS, 0); // block atlas = the slot-0 fallback
         pending.clear();
         nextSlot = 1;

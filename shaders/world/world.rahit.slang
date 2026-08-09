@@ -67,11 +67,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         Prim epr = ConstPtr<Prim>(g.primAddr)[pid];
         int texSlot = int(epr.tint.w + 0.5);
         float4 texel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(uv, 0.0);
-        bool stochasticAlpha = false;
-        MaterialHeader materialHeader;
-        if (instanceKind == ENTITY_BIT) {
-            materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
-            stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;
+        MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
+        bool stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;
+        static const uint WEATHER_ALPHA_FLAG = 1u << 30u;
+        if ((epr.flags & WEATHER_ALPHA_FLAG) != 0u) {
+            texel.a *= clamp(asfloat(epr.aux0), 0.0, 1.0);
         }
         if (stochasticAlpha) {
             uint salt = pid * 1664525u

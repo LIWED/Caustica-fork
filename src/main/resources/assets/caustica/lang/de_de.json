@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Animiertes Wasser",
 	"caustica.options.rt.waterWaves.tooltip": "Animiert Wasseroberflächen-Normalen für bewegte Wellenlichter.",
 
+	"caustica.options.rt.waterFog": "Wassernebel",
+	"caustica.options.rt.waterFog.tooltip": "Fügt beim Blick durch Wasser Tiefennebel und von Geometrie verdeckte Sonnen- oder Mondstrahlen hinzu. Die Wasserabsorption bleibt beim Ausschalten aktiv.",
+
 	"caustica.options.rt.hdr": "HDR-Ausgabe",
 	"caustica.options.rt.hdr.tooltip": "Gibt, wenn der Bildschirm es unterstützt, in HDR (ST.2084/PQ) statt SDR aus. Wird nach einem Neustart des Spiels wirksam.",
 

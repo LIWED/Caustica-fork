@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "アニメーションする水",
 	"caustica.options.rt.waterWaves.tooltip": "水面の法線をアニメーションさせ、動く波のハイライトを表示します。",
 
+	"caustica.options.rt.waterFog": "水中の霧",
+	"caustica.options.rt.waterFog.tooltip": "水越しの景色に距離の霞と、地形や建築物で遮られる太陽・月の光線を追加します。無効でも水の深度吸収は維持されます。",
+
 	"caustica.options.rt.hdr": "HDR 出力",
 	"caustica.options.rt.hdr.tooltip": "ディスプレイが対応している場合、SDR ではなく HDR (ST.2084/PQ) で表示します。ゲームの再起動後に反映されます。",
 

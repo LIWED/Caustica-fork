@@ -20,12 +20,16 @@ import medium;
 import segment;
 import water;
 import trace;
+import water_volume;
+import air_volume;
 import guides;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                uint pixelIndex,
+                                out uint nextRecord,
+                                out float3 prefixRadiance) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -35,7 +39,11 @@ public PathSegment tracePrimary(PathSegment seg,
     uint seed = seg.seed;
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
+    float waterWaveStrength = waterWaves ? clamp(worldPush.waterTuning.x, 0.0, 2.0) : 0.0;
+    bool waterFog = (worldPush.flags & 32u) != 0u;
+    float waterFogStrength = clamp(worldPush.waterAnchor.w, 0.0, 2.0);
     nextRecord = PATH_NO_NEXT;
+    prefixRadiance = float3(0.0, 0.0, 0.0);
 
     {
         int bounce = seg.bounce;
@@ -44,6 +52,16 @@ public PathSegment tracePrimary(PathSegment seg,
                                                showCelestial);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
+
+        float segmentDistance = payload.hitT < 0.0 ? 10000.0 : max(payload.hitT, 0.0);
+        if (mediumIsAir(medium.current)) {
+            uint airSeed = seed ^ pixelIndex * 2246822519u ^ uint(bounce) * 3266489917u
+                    ^ worldPush.frameIndex * 668265263u;
+            AirVolumeResult air = integrateAirVolume(ro, rd, segmentDistance, true, airSeed);
+            prefixRadiance += throughput * air.radiance;
+            throughput *= air.transmittance;
+            terminal.throughput = throughput;
+        }
 
         if (payload.hitT < 0.0) {
             if (bounce == 0) {
@@ -95,7 +113,18 @@ public PathSegment tracePrimary(PathSegment seg,
         // This hit is consumed in pass A, so carry its travelled-medium absorption and cone growth into
         // the record for the next trace. The terminal hit above is deliberately not consumed here.
         if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
+            float3 effectiveExtinction = waterEffectiveExtinction(
+                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+            float3 segmentTransmittance = exp(-effectiveExtinction * payload.hitT);
+            if (medium.current.water && waterFog && waterFogStrength > 0.0) {
+                float3 rawLightDirForWater = worldPush.lightDir.xyz;
+                float lightDirLengthSq = dot(rawLightDirForWater, rawLightDirForWater);
+                float3 lightDirForWater = rawLightDirForWater * rsqrt(max(lightDirLengthSq, 1.0e-8));
+                prefixRadiance += throughput * integrateWaterSingleScatter(
+                        ro, rd, payload.hitT, effectiveExtinction, segmentTransmittance,
+                        worldPush.lightRadiance.xyz, lightDirForWater, waterFogStrength, seed);
+            }
+            throughput *= segmentTransmittance;
         }
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0),
                            RAY_CONE_MIN_WIDTH);
@@ -104,22 +133,32 @@ public PathSegment tracePrimary(PathSegment seg,
         bool entering = payloadDielectricEntering();
         float3 geometricNormal = n;
         float3 previousNormal = n;
-        if (isWater && waterWaves) {
-            float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
-            float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+        float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+        float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+        float3 refractionNormal = n;
+        float3 previousRefractionNormal = n;
+        if (isWater) {
             if (bounce == 0 && abs(geometricNormal.y) >= 0.5) {
                 float2 currentGrad;
                 float2 previousGrad;
-                waterWaveGradTemporal(waterDomain, worldPush.waterParams.w,
-                                      worldPush.waterAnchor.z, waterFootprint, currentGrad, previousGrad);
-                float orientation = geometricNormal.y >= 0.0 ? 1.0 : -1.0;
-                n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
-                previousNormal = orientation
-                        * normalize(float3(-previousGrad.x, 1.0, -previousGrad.y));
+                waterSurfaceGradTemporal(waterDomain, worldPush.waterParams.w,
+                        worldPush.waterAnchor.z, waterFootprint, waterWaveStrength,
+                        currentGrad, previousGrad);
+                n = waterNormalFromGrad(geometricNormal, currentGrad);
+                previousNormal = waterNormalFromGrad(geometricNormal, previousGrad);
             } else {
                 n = applyWaterWaves(geometricNormal, waterDomain,
-                                    worldPush.waterParams.w, waterFootprint);
+                        worldPush.waterParams.w, waterFootprint, waterWaveStrength);
+                previousNormal = n;
             }
+            float2 currentRefractionGrad;
+            float2 previousRefractionGrad;
+            waterRefractionGradTemporal(waterDomain, worldPush.waterParams.w,
+                    worldPush.waterAnchor.z, waterFootprint, waterWaveStrength,
+                    currentRefractionGrad, previousRefractionGrad);
+            refractionNormal = waterRefractionNormal(geometricNormal, currentRefractionGrad);
+            previousRefractionNormal = waterRefractionNormal(
+                    geometricNormal, previousRefractionGrad);
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
@@ -128,7 +167,12 @@ public PathSegment tracePrimary(PathSegment seg,
         float etaI = medium.current.ior;
         float etaT = entering ? entered.ior : medium.outer.ior;
         float F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
-        float3 transmittedDir = refract(rd, n, etaI / etaT);
+        float3 transmittedDir = refract(rd, refractionNormal, etaI / etaT);
+        float3 previousTransmittedDir = refract(
+                rd, previousRefractionNormal, etaI / etaT);
+        if (dot(transmittedDir, transmittedDir) <= 0.0) {
+            F = 1.0;
+        }
         float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
 
         if (bounce == 0) {
@@ -148,10 +192,9 @@ public PathSegment tracePrimary(PathSegment seg,
                 } else {
                     mediumPop(guideMedium);
                 }
-                resolveTransmissionGuide(hitPos, transmittedDir, geometricNormal,
+                resolveTransmissionGuide(hitPos, transmittedDir, previousTransmittedDir, geometricNormal,
                         guideMedium, transmitBias, rayConeWidth, rayConeSpread,
-                        !isWater && entering
-                                ? float3(payload.albedo) : float3(1.0, 1.0, 1.0));
+                        float3(1.0, 1.0, 1.0));
             }
         }
 
@@ -172,7 +215,9 @@ public PathSegment tracePrimary(PathSegment seg,
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
-            queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
+            PackedPathSegment packedDeferred = packPathSegment(deferred, PATH_NO_NEXT);
+            packedDeferred.pathFlags |= PATH_AIR_VOLUME_CONSUMED;
+            queue[splitRecord] = packedDeferred;
             nextRecord = splitRecord;
             float3 reflectedDir = reflect(rd, n);
             PathSegment reflected = makePathSegment(
@@ -239,9 +284,13 @@ void main() {
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     uint nextRecord;
+    float3 prefixRadiance;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
-    queue[pixelIndex] = packPathSegment(terminal, nextRecord);
+            current, queue, splitRecord, pixelIndex, nextRecord, prefixRadiance);
+    outImage[pix] = float4(prefixRadiance, 1.0);
+    PackedPathSegment packedTerminal = packPathSegment(terminal, nextRecord);
+    packedTerminal.pathFlags |= PATH_AIR_VOLUME_CONSUMED;
+    queue[pixelIndex] = packedTerminal;
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
     if (pc.debugView != 0u) {

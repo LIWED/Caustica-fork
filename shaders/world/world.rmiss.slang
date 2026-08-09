@@ -27,6 +27,23 @@ static const float3 MOON_DISC_RADIANCE = float3(1.7, 1.85, 2.2) / 4.0; // lit-si
 // Vibrance applied to the atmosphere in-scatter only (not discs/stars/night ambient): luminance-
 // preserving, so GI energy is unchanged.
 static const float SKY_SATURATION = 1.2;
+// Shared verbatim with RtComposite.cloudDirectTransmittance().
+static const float WEATHER_RAIN_ATTENUATION = 0.72;
+static const float WEATHER_THUNDER_ATTENUATION = 0.18;
+static const float WEATHER_MIN_TRANSMITTANCE = 0.10;
+static const float CLOUD_CLEAR_COVERAGE = 0.24;
+static const float CLOUD_CLEAR_THICKNESS = 0.12;
+static const float CLOUD_SPATIAL_SCALE = 0.0032;
+static const float CLOUD_WIND_X = 0.0113;
+static const float CLOUD_WIND_Z = -0.0067;
+static const float CLOUD_RAIN_COVERAGE = 0.56;
+static const float CLOUD_THUNDER_COVERAGE = 0.20;
+static const float CLOUD_RAIN_THICKNESS = 0.60;
+static const float CLOUD_THUNDER_THICKNESS = 0.28;
+static const float CLOUD_EXTINCTION = 2.45;
+static const float CLOUD_MAX_DISTANCE = 32768.0;
+static const float CLOUD_DISTANCE_FADE_START = 27852.8;
+static const float CLOUD_HORIZON_FADE_END = 0.035;
 // VISIBLE disc half-angles, matched to vanilla: the sun/moon quads are drawn at half-width 30/20 at
 // distance 100 → half-angle = atan(0.30) / atan(0.20). Decoupled from the NEE light radius (≈0.6°).
 static const float SUN_DISC_HALF_ANGLE  = 0.29146; // atan(30/100), vanilla sun size
@@ -219,6 +236,76 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
     return 0.2 * star * starCol * starBrightness;
 }
 
+struct WeatherCloudResult {
+    float transmittance;
+    float3 radiance;
+};
+
+float cloudDirectTransmittance(float rain, float thunder) {
+    return clamp(1.0 - rain * WEATHER_RAIN_ATTENUATION - thunder * WEATHER_THUNDER_ATTENUATION,
+                 WEATHER_MIN_TRANSMITTANCE, 1.0);
+}
+
+float weatherSkyFactor(float4 weather) {
+    float direct = cloudDirectTransmittance(weather.x, weather.y);
+    // weather.z is ClientLevel's hide-aware lightning countdown normalized to 0..1. It may lift only
+    // the atmosphere and cloud underside; stars, discs and CPU NEE retain the non-flash direct factor.
+    float lightning = weather.y * smoothstep(0.78, 1.0, weather.z);
+    return clamp(direct + lightning * (1.0 - direct) * 0.80,
+                 WEATHER_MIN_TRANSMITTANCE, 1.0);
+}
+
+float valueNoise2(float2 p) {
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash13(float3(i, 0.0));
+    float b = hash13(float3(i + float2(1.0, 0.0), 0.0));
+    float c = hash13(float3(i + float2(0.0, 1.0), 0.0));
+    float d = hash13(float3(i + float2(1.0, 1.0), 0.0));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
+// Three deliberately rotated, non-harmonic octaves avoid the parallel bands and square repetition
+// produced by sampling the same axes at powers of two.
+float cloudNoise3(float2 p) {
+    float n0 = valueNoise2(p);
+    float2 p1 = float2(p.x * 0.73 - p.y * 1.87, p.x * 1.87 + p.y * 0.73) + 17.31;
+    float n1 = valueNoise2(float2(p1.x, p1.y));
+    float2 p2 = float2(p.x * -3.17 - p.y * 0.41, p.x * 0.41 - p.y * 3.17) - 9.73;
+    float n2 = valueNoise2(float2(p2.x, p2.y));
+    return n0 * 0.57 + n1 * 0.29 + n2 * 0.14;
+}
+
+WeatherCloudResult weatherCloud(WorldPush worldPush, float3 rayOrigin, float3 dir, float weatherSky) {
+    WeatherCloudResult result;
+    result.transmittance = 1.0;
+    result.radiance = float3(0.0, 0.0, 0.0);
+    float rain = clamp(worldPush.weather.x, 0.0, 1.0);
+    float thunder = clamp(worldPush.weather.y, 0.0, 1.0);
+    if (dir.y <= 0.0) return result;
+
+    float tCloud = (worldPush.weatherColor.w - rayOrigin.y) / dir.y;
+    if (tCloud <= 0.0 || tCloud > CLOUD_MAX_DISTANCE) return result;
+    float2 cloudPoint = rayOrigin.xz + dir.xz * tCloud;
+    cloudPoint += worldPush.cloudAnchor.xy;
+    float2 wind = float2(CLOUD_WIND_X, CLOUD_WIND_Z) * worldPush.weather.w;
+    float noise = cloudNoise3(cloudPoint * CLOUD_SPATIAL_SCALE + wind);
+    float coverage = clamp(CLOUD_CLEAR_COVERAGE + rain * CLOUD_RAIN_COVERAGE
+                         + thunder * CLOUD_THUNDER_COVERAGE, 0.0, 1.0);
+    float thickness = clamp(CLOUD_CLEAR_THICKNESS + rain * CLOUD_RAIN_THICKNESS
+                          + thunder * CLOUD_THUNDER_THICKNESS, 0.0, 1.0);
+    float horizonFade = smoothstep(0.0, CLOUD_HORIZON_FADE_END, dir.y);
+    float distanceFade = 1.0 - smoothstep(CLOUD_DISTANCE_FADE_START, CLOUD_MAX_DISTANCE, tCloud);
+    float density = smoothstep(1.0 - coverage, 1.10 - coverage, noise)
+                  * thickness * horizonFade * distanceFade;
+    result.transmittance = exp(-CLOUD_EXTINCTION * density);
+    float lightningLift = thunder * smoothstep(0.78, 1.0, worldPush.weather.z);
+    float bottomLight = (0.055 + 0.24 * weatherSky) * (1.0 + 1.8 * lightningLift);
+    result.radiance = worldPush.weatherColor.xyz * bottomLight * (1.0 - result.transmittance);
+    return result;
+}
+
 [shader("miss")]
 void main(inout Payload payload) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
@@ -229,6 +316,8 @@ void main(inout Payload payload) {
     float VdotS = dot(dir, sd);
     float sunUp = clamp((SdotU + 0.0625) / 0.125, 0.0, 1.0); // 0 well below horizon .. 1 above
     float starBrightness = worldPush.lightRadiance.w;
+    float weatherSky = weatherSkyFactor(worldPush.weather);
+    float weatherDirect = cloudDirectTransmittance(worldPush.weather.x, worldPush.weather.y);
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
 
     // Physically-based in-scattering: blue zenith, bright/desaturated horizon, warm Mie halo + red
@@ -255,7 +344,8 @@ void main(inout Payload payload) {
     float3 nightAmbient = lerp(NIGHT_HORIZON, NIGHT_ZENITH, up);
     col += nightAmbient * (1.0 - day);
     col *= downFade;
-    col += stars(dir, starBrightness, VdotS, worldPush.celestial);
+    col *= weatherSky;
+    col += stars(dir, starBrightness, VdotS, worldPush.celestial) * weatherDirect;
 
     // Sun & moon discs — sampled from the vanilla celestials atlas, gated to rays that haven't already
     // accounted for the light via diffuse NEE. squareBody gives the body-local [-1,1] coord; the
@@ -271,7 +361,7 @@ void main(inout Payload payload) {
             // survives, the halo collapses to ~0.
             float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
             // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            col += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp;
+            col += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp * weatherDirect;
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
@@ -283,9 +373,12 @@ void main(inout Payload payload) {
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            col += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
+            col += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp * weatherDirect;
         }
     }
+
+    WeatherCloudResult cloud = weatherCloud(worldPush, WorldRayOrigin(), dir, weatherSky);
+    col = col * cloud.transmittance + cloud.radiance;
 
     // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
     // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not

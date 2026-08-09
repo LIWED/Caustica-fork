@@ -29,6 +29,18 @@
 
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
+	"caustica.options.rt.waterWaveStrength": "Water Wave Strength",
+	"caustica.options.rt.waterWaveStrength.tooltip": "Controls twelve-layer surface/reflection waves, bounded low-frequency eight-layer refraction, and twelve-layer physical caustics. 0% uses geometric normals and neutral caustics; 100% is default; 200% doubles amplitude.",
+	"caustica.options.rt.waterFog": "Water Fog",
+	"caustica.options.rt.waterFog.tooltip": "Add depth haze and geometry-occluded sun or moon shafts while viewing through water. Water absorption remains active when disabled.",
+	"caustica.options.rt.waterFogStrength": "Water Fog Strength",
+  "caustica.options.rt.waterFogStrength.tooltip": "Scales underwater emerald/cyan haze and Tyndall shafts. Direct water absorption and deep-water transmission stay fixed.",
+	"caustica.options.rt.airFog": "Atmospheric Fog",
+	"caustica.options.rt.airFog.tooltip": "Add natural height-dependent distance haze to air segments.",
+	"caustica.options.rt.airFogStrength": "Atmospheric Fog Strength",
+	"caustica.options.rt.airFogStrength.tooltip": "Scale atmospheric fog density from clear air to dense haze.",
+	"caustica.options.rt.volumetricLight": "Volumetric Light",
+	"caustica.options.rt.volumetricLight.tooltip": "Add terrain-occluded sun and moon shafts within atmospheric fog.",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Present in HDR (ST.2084/PQ) instead of SDR, when the display supports it. Takes effect after restarting the game.",

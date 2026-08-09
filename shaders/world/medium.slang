@@ -9,10 +9,19 @@
 import world_common;
 import world_core;
 
-public static const float WATER_DENSITY = 0.1;
-public static const float3 WATER_ABSORB_FLOOR = float3(0.015, 0.010, 0.008);
+public static const float3 WATER_ABSORPTION_BASE = float3(0.118, 0.052, 0.058);
+public static const float WATER_BIOME_ABSORPTION = 0.035;
 public float3 waterExtinction(float3 tint) {
-    return WATER_ABSORB_FLOOR + WATER_DENSITY * (float3(1.0, 1.0, 1.0) - clamp(tint, 0.0, 1.0));
+    return WATER_ABSORPTION_BASE + WATER_BIOME_ABSORPTION
+            * (float3(1.0, 1.0, 1.0) - clamp(tint, 0.0, 1.0));
+}
+
+// Normalized Henyey-Greenstein phase for suspended particles in water. A moderate forward bias makes
+// rays viewed toward the active sun/moon brighter without the singular beam produced by a near-unity g.
+public float waterTyndallPhase(float cosTheta) {
+    const float g = 0.72;
+    float denominator = pow(max(1.0 + g * g - 2.0 * g * clamp(cosTheta, -1.0, 1.0), 0.04), 1.5);
+    return (1.0 - g * g) / (4.0 * PI * denominator);
 }
 
 // A non-water dielectric's tint is a filter over one block of travel rather than a biome water colour, so
@@ -42,7 +51,7 @@ public float3 volumeExtinction(float3 tint, float transmission) {
 public struct Medium {
     public float ior;
     public float3 extinction;
-    public bool water; // drives the wave-refraction caustic on submerged receivers; nothing else is water-specific
+    public bool water; // gates water caustics and the bounded per-segment water scattering term
 };
 
 public struct MediumStack {
@@ -56,6 +65,15 @@ public Medium airMedium() {
     m.extinction = float3(0.0, 0.0, 0.0);
     m.water = false;
     return m;
+}
+
+// Atmospheric fog belongs only to actual air segments. A non-water dielectric is still a solid
+// participating medium, so treating every `!water` segment as air would add atmospheric scattering
+// inside glass and double-count its own Beer-Lambert extinction.
+public bool mediumIsAir(Medium medium) {
+    return !medium.water
+            && abs(medium.ior - 1.0) < 1.0e-4
+            && max(medium.extinction.x, max(medium.extinction.y, medium.extinction.z)) < 1.0e-6;
 }
 
 public MediumStack makeMediumStack(Medium start) {

@@ -47,6 +47,8 @@ public final class RtEntityCapture implements VertexConsumer {
     // Conservative default: unknown submissions retain alpha testing instead of incorrectly becoming
     // opaque. RtEntityCollector assigns this from the RenderPipeline before every known submission.
     int currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+    int currentFlags;
+    float currentAux0;
     // Decal-stacking rank for the current submission (0 = no offset). Set by the collector from
     // SubmitNodeCollector#order(int) — see emitQuad's coincident-layer push.
     int currentOrder;
@@ -83,6 +85,8 @@ public final class RtEntityCapture implements VertexConsumer {
         currentTexSlot = 0;
         currentMaterialId = 0;
         currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+        currentFlags = 0;
+        currentAux0 = 0.0f;
         currentOrder = 0;
         uvRemap = false;
     }
@@ -400,8 +404,8 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add(tb);
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
             prim.add(Float.intBitsToFloat(currentMaterialId));
-            prim.add(0f); // flags
-            prim.add(0f); // aux0
+            prim.add(Float.intBitsToFloat(currentFlags));
+            prim.add(currentAux0);
             prim.add(0f); // aux1
             alphaBuckets.add(currentAlphaBucket);
         }

@@ -537,6 +537,18 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.maxBounces", "composite.max-bounces", 4, 2, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
+            public static final FloatSetting WATER_WAVE_STRENGTH =
+                    clampedFloat("caustica.rt.waterWaveStrength", "composite.water-wave-strength", 1.0f, 0.0f, 2.0f);
+            public static final BooleanSetting WATER_FOG =
+                    bool("caustica.rt.waterFog", "composite.water-fog", true);
+            public static final FloatSetting WATER_FOG_STRENGTH =
+                    clampedFloat("caustica.rt.waterFogStrength", "composite.water-fog-strength", 1.0f, 0.0f, 2.0f);
+            public static final BooleanSetting AIR_FOG =
+                    bool("caustica.rt.airFog", "composite.air-fog", true);
+            public static final FloatSetting AIR_FOG_STRENGTH =
+                    clampedFloat("caustica.rt.airFogStrength", "composite.air-fog-strength", 1.0f, 0.0f, 2.0f);
+            public static final BooleanSetting VOLUMETRIC_LIGHT =
+                    bool("caustica.rt.volumetricLight", "composite.volumetric-light", true);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
                     radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =

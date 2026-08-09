@@ -1,6 +1,10 @@
 .gradle/
+.gradle-user-home/
+.superpowers/
+/docs/superpowers/
 .idea/
 /build/
+/buildSrc/.gradle/
 /buildSrc/build/
 native/ngx_shim/build/
 run/
@@ -10,3 +14,6 @@ out/
 third_party/
 bin/
 /logs
+/scripts/build_and_deploy_test.ps1
+/scripts/CausticaTestDeploy.psm1
+/scripts/test_build_and_deploy_test.ps1
