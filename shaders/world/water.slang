@@ -362,7 +362,8 @@ public float2 causticLanding(float2 xz, float t, float3 inc, float h, float lodF
 }
 
 public float waterCaustic(float3 receiverPos, float3 stableLightDir, float depth, float strength) {
-    if (strength <= 0.0) return 1.0;
+    float solarCausticWeight = clamp(worldPush.sunDir.w, 0.0, 1.0);
+    if (strength <= 0.0 || solarCausticWeight <= 0.0) return 1.0;
     // Grazing light: the receiver-plane intersection degenerates and caustics vanish in reality anyway
     // (long slant paths absorb + the pattern smears out) — fade the effect to neutral 1.0.
     float fade = smoothstep(0.06, 0.18, stableLightDir.y);
@@ -391,5 +392,5 @@ public float waterCaustic(float3 receiverPos, float3 stableLightDir, float depth
             * shallowContrast * amplitudeResponse;
     float focus = clamp(shapedFocus, CAUSTIC_MIN, CAUSTIC_MAX);
     float deepFade = smoothstep(CAUSTIC_FADE_START, CAUSTIC_FADE_END, h);
-    return lerp(1.0, focus, fade * (1.0 - deepFade));
+    return lerp(1.0, focus, solarCausticWeight * fade * (1.0 - deepFade));
 }

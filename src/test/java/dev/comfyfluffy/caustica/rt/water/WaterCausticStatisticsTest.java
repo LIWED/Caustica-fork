@@ -78,6 +78,25 @@ final class WaterCausticStatisticsTest {
     private Evaluation cachedEvaluation;
 
     @Test
+    void solarWeightMakesNightCausticsNeutralWithoutChangingDaylight() {
+        String waterCaustic = ShaderParser.functionSection(
+                ShaderParser.removeComments(ShaderParser.read(WATER_SHADER)),
+                "public float waterCaustic");
+        assertAll("solar-gated water caustics",
+                () -> assertTrue(waterCaustic.contains(
+                        "float solarCausticWeight = clamp(worldPush.sunDir.w, 0.0, 1.0);")),
+                () -> assertTrue(waterCaustic.contains(
+                        "if (strength <= 0.0 || solarCausticWeight <= 0.0) return 1.0;")),
+                () -> assertTrue(waterCaustic.contains(
+                        "return lerp(1.0, focus, solarCausticWeight * fade * (1.0 - deepFade));")));
+
+        double focus = 2.4;
+        assertEquals(1.0, applySolarWeight(focus, 0.0), 0.0);
+        assertEquals(focus, applySolarWeight(focus, 1.0), 0.0);
+        assertEquals(1.7, applySolarWeight(focus, 0.5), 1.0e-12);
+    }
+
+    @Test
     void currentShaderParsesTheApprovedDetailAndSplitRoles() {
         Fixture candidate = candidate();
 
@@ -250,6 +269,10 @@ final class WaterCausticStatisticsTest {
 
     double[][] sampleFocus(double depth, double time) {
         return sampleFocus(candidate(), depth, time, ORIGIN_X, ORIGIN_Z, 0.0, 0.0);
+    }
+
+    private static double applySolarWeight(double focus, double solarWeight) {
+        return 1.0 + (focus - 1.0) * solarWeight;
     }
 
     double localPeakDensity(double[][] focus, double threshold) {

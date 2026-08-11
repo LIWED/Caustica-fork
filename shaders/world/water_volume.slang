@@ -15,7 +15,9 @@ public static const float3 WATER_SCATTERING_COEFFICIENT = float3(0.018, 0.018, 0
 
 public float3 waterEffectiveExtinction(float3 baseExtinction, bool water, bool waterFog,
                                        float waterFogStrength) {
-    return baseExtinction;
+    if (!water || !waterFog) return baseExtinction;
+    float strength = clamp(waterFogStrength, 0.0, 2.0);
+    return baseExtinction + WATER_SCATTERING_COEFFICIENT * strength;
 }
 
 public float3 waterScatterPalette(float3 transmittance) {

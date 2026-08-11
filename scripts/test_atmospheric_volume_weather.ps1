@@ -52,7 +52,7 @@ $anyHit = Read-ProjectFile 'shaders/world/world.rahit.slang'
 $en = (Read-ProjectFile 'src/main/resources/assets/caustica/lang/en_us.json') | ConvertFrom-Json
 $zh = (Read-ProjectFile 'src/main/resources/assets/caustica/lang/zh_cn.json') | ConvertFrom-Json
 
-Require-Match 'version is 0.4.3' $gradle '(?m)^mod_version=0\.4\.3$'
+Require-Match 'version is 0.4.4' $gradle '(?m)^mod_version=0\.4\.4$'
 Require-Match 'WorldPush weather float4 ABI' $world '(?m)^\s*public float4\s+weather\s*;'
 Require-Match 'WorldPush weatherColor float4 ABI' $world '(?m)^\s*public float4\s+weatherColor\s*;'
 Require-Match 'WorldPush airVolume float4 ABI' $world '(?m)^\s*public float4\s+airVolume\s*;'

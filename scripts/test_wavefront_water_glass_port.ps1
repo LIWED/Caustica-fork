@@ -262,6 +262,14 @@ $waterScatterPaletteCode = Get-FunctionSection -Text $waterVolumeCode `
     -Signature 'public float3 waterScatterPalette'
 $integrateWaterSingleScatterCode = Get-FunctionSection -Text $waterVolumeCode `
     -Signature 'public float3 integrateWaterSingleScatter'
+$primaryCode = Remove-SourceComments -Text $primary
+$secondaryCode = Remove-SourceComments -Text $secondary
+$primaryFresnelInterfaceCode = Get-Section -Text $primaryCode `
+    -StartMarker 'bool isWater = material == MATERIAL_WATER;' `
+    -EndMarker '[shader("raygeneration")]'
+$secondaryFresnelInterfaceCode = Get-Section -Text $secondaryCode `
+    -StartMarker 'bool isWater = material == MATERIAL_WATER;' `
+    -EndMarker 'showCelestial = true;'
 # Pass B must attenuate both finite hits and its finite sky horizon before either branch consumes radiance.
 Require-Match -Text $secondary -Pattern '(?s)float segmentDistance = payload\.hitT < 0\.0 \? 10000\.0 : payload\.hitT;.*?float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, waterFog, waterFogStrength\);.*?float3 segmentTransmittance = exp\(-effectiveExtinction \* segmentDistance\);.*?throughput \*= segmentTransmittance;.*?if \(payload\.hitT < 0\.0\)' -Message 'Pass B does not apply effective water extinction before the hit/miss split.'
 Require-NoMatch -Text $secondary -Pattern 'medium\.current\.extinction \* payload\.hitT' -Message 'Pass B still contains the old finite-hit-only Beer attenuation.'
@@ -363,7 +371,7 @@ Require-Match -Text $primary -Pattern '(?s)n = waterNormalFromGrad\(geometricNor
 Require-Match -Text $secondary -Pattern '(?s)float waterWaveStrength = waterWaves \? clamp\(worldPush\.waterTuning\.x, 0\.0, 2\.0\) : 0\.0;.*?waterRefractionNormal\(' -Message 'Pass B does not apply the live wave amplitude to bounded refraction.'
 
 # Versioned builds must be distinguishable during visual iteration.
-Require-Match -Text $gradleProperties -Pattern '(?m)^mod_version=0\.4\.3\s*$' -Message 'The reference-water and dense-caustics update is not versioned as 0.4.3.'
+Require-Match -Text $gradleProperties -Pattern '(?m)^mod_version=0\.4\.4\s*$' -Message 'The night-caustics and deep-water visibility update is not versioned as 0.4.4.'
 
 # Caustics add a deterministic high-frequency spectrum without changing the visible surface or the
 # bounded low-frequency Snell role. Assertions are comment-stripped and function-scoped so comments or
@@ -420,10 +428,16 @@ Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_FADE_
 Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_FADE_END = 42\.0;' -Message 'The approved deep-caustic fade end changed.'
 Require-Match -Text $waterCausticCode -Pattern 'float fade = smoothstep\(0\.06, 0\.18, stableLightDir\.y\);' -Message 'The approved grazing-light fade changed.'
 Require-Match -Text $waterCausticCode -Pattern 'float shallowWeight = 1\.0 - smoothstep\(0\.25, 3\.5, h\);' -Message 'Shallow caustic recovery is not limited to near water.'
-Require-Match -Text $waterCausticCode -Pattern 'if \(strength <= 0\.0\) return 1\.0;' -Message 'Disabled caustics do not return the neutral value immediately.'
+Require-Match -Text $waterCausticCode -Pattern 'float solarCausticWeight = clamp\(worldPush\.sunDir\.w, 0\.0, 1\.0\);' `
+    -Message 'Water caustics do not consume the existing solar day factor.'
+Require-Match -Text $waterCausticCode -Pattern 'if \(strength <= 0\.0 \|\| solarCausticWeight <= 0\.0\) return 1\.0;' `
+    -Message 'Night or disabled caustics do not return the neutral multiplier.'
 Require-Match -Text $waterCausticCode -Pattern '(?s)float amplitudeResponse = clamp\(strength, 0\.0, 2\.0\);\s*float shapedFocus = 1\.0 \+ \(softFocus - 1\.0\)\s*\* shallowContrast \* amplitudeResponse;' -Message 'Caustic focusing is not shaped around neutral by the live amplitude.'
 Require-Match -Text $waterCausticCode -Pattern 'float focus = clamp\(shapedFocus, CAUSTIC_MIN, CAUSTIC_MAX\);' -Message 'The softened physical caustic factor is not bounded.'
-Require-Match -Text $waterCausticCode -Pattern '(?s)float deepFade = smoothstep\(CAUSTIC_FADE_START, CAUSTIC_FADE_END, h\);\s*return lerp\(1\.0, focus, fade \* \(1\.0 - deepFade\)\);' -Message 'The approved 12-to-42-block deep caustic fade changed.'
+Require-Match -Text $waterCausticCode -Pattern 'return lerp\(1\.0, focus, solarCausticWeight \* fade \* \(1\.0 - deepFade\)\);' `
+    -Message 'The final caustic deviation is not modulated by solar daylight.'
+Require-NoMatch -Text $secondary -Pattern '(?:vis|visB|worldPush\.lightRadiance\.xyz)\s*\*=\s*(?:worldPush\.sunDir\.w|solarCausticWeight)' `
+    -Message 'Night caustic gating incorrectly removes moon lighting or complete visibility.'
 Require-Match -Text $waterCausticCode -Pattern 'float stableLightDistance = depth / max\(stableLightDir\.y, 0\.05\);' -Message 'Caustics do not reconstruct stable slant distance from vertical water depth.'
 Require-Match -Text $waterCausticCode -Pattern 'receiverPos\.xz \+ stableLightDir\.xz \* stableLightDistance \+ worldPush\.waterAnchor\.xy' -Message 'The caustic pattern is not anchored from the receiver using stable depth and light direction.'
 $causticPathCode = $waterCausticDetailCode + $waterCausticGradCode + $causticLandingCode + $waterCausticCode
@@ -436,6 +450,24 @@ Require-Match -Text $secondary -Pattern 'float causticDepthBack = shadowBack\.wa
 Require-Match -Text $secondary -Pattern 'visB \*= waterCaustic\(\s*hitPos, causticLightDir, causticDepthBack, waterWaveStrength\);' -Message 'SSS back-face caustics do not share the amplitude-aware stable receiver interface.'
 Require-NoMatch -Text $secondary -Pattern 'waterCaustic\([^;]*, lightDir, shadow\.waterHitT\)' -Message 'Pass B still drives caustic motion with the jittered NEE direction.'
 Require-NoMatch -Text $secondary -Pattern 'waterCaustic\([^;]*shadow(Back)?\.waterHitT\)' -Message 'A caustic call still passes sampled slant distance instead of recovered vertical depth.'
+
+function Get-WaterEffectiveExtinctionCpu {
+    param(
+        [double[]] $BaseExtinction,
+        [double[]] $ScatteringCoefficient,
+        [bool] $Water,
+        [bool] $WaterFog,
+        [double] $WaterFogStrength
+    )
+
+    if (-not $Water -or -not $WaterFog) {
+        return [double[]]@($BaseExtinction)
+    }
+    $strength = [Math]::Min([Math]::Max($WaterFogStrength, 0.0), 2.0)
+    return [double[]](0..2 | ForEach-Object {
+        $BaseExtinction[$_] + $ScatteringCoefficient[$_] * $strength
+    })
+}
 
 # Direct absorption stays visibly clear nearby, becomes cyan with depth, and is independent of Water Fog Strength.
 $approvedWaterBase = @(0.118, 0.052, 0.058)
@@ -460,6 +492,96 @@ if (-not $waterAbsorptionBaseMatch.Success -or -not $waterBiomeAbsorptionMatch.S
     $productionBiomeAbsorption = [double]::Parse($waterBiomeAbsorptionMatch.Groups['value'].Value, $culture)
     $productionExtinction = 0..2 | ForEach-Object {
         $productionWaterBase[$_] + $productionBiomeAbsorption * (1.0 - $defaultTint[$_])
+    }
+    $waterScatteringCoefficientMatch = [regex]::Match(
+        $waterVolumeCode,
+        'public\s+static\s+const\s+float3\s+WATER_SCATTERING_COEFFICIENT\s*=\s*float3\(\s*(?<red>\d+\.\d+)\s*,\s*(?<green>\d+\.\d+)\s*,\s*(?<blue>\d+\.\d+)\s*\);'
+    )
+    if (-not $waterScatteringCoefficientMatch.Success) {
+        $failures.Add('Production water scattering coefficient could not be parsed for the fog-depth anchors.')
+    } else {
+        $waterScatteringCoefficient = @(
+            [double]::Parse($waterScatteringCoefficientMatch.Groups['red'].Value, $culture),
+            [double]::Parse($waterScatteringCoefficientMatch.Groups['green'].Value, $culture),
+            [double]::Parse($waterScatteringCoefficientMatch.Groups['blue'].Value, $culture)
+        )
+        foreach ($channel in 0..2) {
+            if ([Math]::Abs($waterScatteringCoefficient[$channel] - 0.018) -gt 1.0e-12) {
+                $failures.Add('Water scattering coefficient is not exactly 0.018 in every channel.')
+                break
+            }
+        }
+
+        $effectiveExtinctionByStrength = @{}
+        foreach ($strength in @(-1, 0, 1, 2, 3)) {
+            $effectiveExtinctionByStrength[$strength] = Get-WaterEffectiveExtinctionCpu `
+                -BaseExtinction $productionExtinction -ScatteringCoefficient $waterScatteringCoefficient `
+                -Water $true -WaterFog $true -WaterFogStrength $strength
+        }
+        $waterFogBranchCases = @(
+            @{ Name = 'non-water'; Water = $false; WaterFog = $true; Strength = 1; EffectiveStrength = 0 },
+            @{ Name = 'fog-off'; Water = $true; WaterFog = $false; Strength = 1; EffectiveStrength = 0 },
+            @{ Name = 'strength 0'; Water = $true; WaterFog = $true; Strength = 0; EffectiveStrength = 0 },
+            @{ Name = 'strength below 0'; Water = $true; WaterFog = $true; Strength = -1; EffectiveStrength = 0 },
+            @{ Name = 'strength 1'; Water = $true; WaterFog = $true; Strength = 1; EffectiveStrength = 1 },
+            @{ Name = 'strength 2'; Water = $true; WaterFog = $true; Strength = 2; EffectiveStrength = 2 },
+            @{ Name = 'strength above 2'; Water = $true; WaterFog = $true; Strength = 3; EffectiveStrength = 2 }
+        )
+        foreach ($case in $waterFogBranchCases) {
+            $actual = Get-WaterEffectiveExtinctionCpu -BaseExtinction $productionExtinction `
+                -ScatteringCoefficient $waterScatteringCoefficient -Water $case.Water -WaterFog $case.WaterFog `
+                -WaterFogStrength $case.Strength
+            foreach ($channel in 0..2) {
+                $expected = $productionExtinction[$channel] + $waterScatteringCoefficient[$channel] * $case.EffectiveStrength
+                if ([Math]::Abs($actual[$channel] - $expected) -gt 1.0e-12) {
+                    $failures.Add("Water Fog CPU mirror does not preserve the $($case.Name) helper branch/clamp result.")
+                    break
+                }
+            }
+        }
+        $expectedWaterFogAnchors = @{
+            10 = @{ 0 = @(0.236, 0.492, 0.541); 1 = @(0.197, 0.411, 0.452); 2 = @(0.165, 0.343, 0.377) }
+            20 = @{ 0 = @(0.056, 0.242, 0.292); 1 = @(0.039, 0.169, 0.204); 2 = @(0.027, 0.118, 0.142) }
+        }
+        $waterFogTransmission = @{}
+        foreach ($distance in @(1, 5, 10, 20)) {
+            $waterFogTransmission[$distance] = @{}
+            foreach ($strength in @(0, 1, 2)) {
+                $values = @($effectiveExtinctionByStrength[$strength] | ForEach-Object { [Math]::Exp(-$_ * $distance) })
+                $waterFogTransmission[$distance][$strength] = $values
+                Write-Host ('Water Fog transmission {0,2} block(s), s{1}: R={2:F6}, G={3:F6}, B={4:F6}' -f `
+                        $distance, $strength, $values[0], $values[1], $values[2])
+            }
+        }
+        foreach ($distance in @(10, 20)) {
+            foreach ($strength in @(0, 1, 2)) {
+                $actual = $waterFogTransmission[$distance][$strength]
+                $expected = $expectedWaterFogAnchors[$distance][$strength]
+                foreach ($channel in 0..2) {
+                    if ([Math]::Abs($actual[$channel] - $expected[$channel]) -gt 0.003) {
+                        $failures.Add("Water Fog transmission anchor at $distance block(s), s$strength is outside tolerance 0.003.")
+                        break
+                    }
+                }
+            }
+        }
+        foreach ($distance in @(1, 5, 10, 20)) {
+            foreach ($channel in 0..2) {
+                if (-not ($waterFogTransmission[$distance][0][$channel] -gt $waterFogTransmission[$distance][1][$channel] `
+                        -and $waterFogTransmission[$distance][1][$channel] -gt $waterFogTransmission[$distance][2][$channel])) {
+                    $failures.Add("Water Fog transmission at $distance block(s) is not strictly ordered s0 > s1 > s2.")
+                }
+            }
+        }
+        foreach ($strength in @(0, 1, 2)) {
+            foreach ($channel in 0..2) {
+                if (-not ($waterFogTransmission[1][$strength][$channel] -gt $waterFogTransmission[5][$strength][$channel] `
+                        -and $waterFogTransmission[5][$strength][$channel] -gt $waterFogTransmission[10][$strength][$channel] `
+                        -and $waterFogTransmission[10][$strength][$channel] -gt $waterFogTransmission[20][$strength][$channel])) {
+                    $failures.Add("Water Fog transmission at s$strength is not strictly distance-monotonic in every channel.")
+                }
+            }
+        }
     }
     $productionTransmission = @{}
     foreach ($distance in @(1, 5, 10, 20)) {
@@ -506,7 +628,142 @@ Require-Match -Text $waterVolume -Pattern 'public static const uint WATER_VOLUME
 Require-Match -Text $waterVolume -Pattern 'public static const float WATER_VOLUME_MAX_DISTANCE = 48\.0;' -Message 'Water volume shadow integration is not capped at 48 blocks.'
 Require-NoMatch -Text $waterVolumeCode -Pattern 'WATER_TURBIDITY_EXTINCTION' -Message 'The obsolete turbidity-extinction constant name remains in production code.'
 Require-Match -Text $waterVolumeCode -Pattern 'public static const float3 WATER_SCATTERING_COEFFICIENT = float3\(0\.018, 0\.018, 0\.018\);' -Message 'Water scattering has no explicitly named coefficient.'
-Require-Match -Text $waterEffectiveExtinctionCode -Pattern '(?s)^public float3 waterEffectiveExtinction\(.*?\)\s*\{\s*return baseExtinction;\s*\}$' -Message 'Effective extinction still depends on Water Fog state or strength.'
+Require-Match -Text $waterEffectiveExtinctionCode -Pattern '(?s)^public float3 waterEffectiveExtinction\(.*?\)\s*\{\s*if \(!water \|\| !waterFog\) return baseExtinction;\s*float strength = clamp\(waterFogStrength, 0\.0, 2\.0\);\s*return baseExtinction \+ WATER_SCATTERING_COEFFICIENT \* strength;\s*\}$' -Message 'Effective extinction does not add clamped Water Fog scattering only for water with fog enabled.'
+Require-Match -Text $primaryFresnelInterfaceCode -Pattern 'float F = fresnelDielectric\(clamp\(dot\(-rd, n\), 0\.0, 1\.0\), etaI, etaT\);' -Message 'Pass A Fresnel input is not restricted to the incident interface normal and IOR pair.'
+Require-Match -Text $secondaryFresnelInterfaceCode -Pattern '(?s)float cosI = clamp\(dot\(-rd, n\), 0\.0, 1\.0\);\s*float F = fresnelDielectric\(cosI, etaI, etaT\);' -Message 'Pass B Fresnel input is not restricted to the incident interface normal and IOR pair.'
+foreach ($entry in @(
+    @{ Name = 'Pass A'; Text = $primaryFresnelInterfaceCode },
+    @{ Name = 'Pass B'; Text = $secondaryFresnelInterfaceCode }
+)) {
+    Require-Count -Text $entry.Text -Pattern '(?m)^\s*F\s*=' -Expected 1 -Message "$($entry.Name) Fresnel factor has a non-TIR reassignment."
+    Require-NoMatch -Text $entry.Text -Pattern '(?m)^\s*(?:F|(?:reflect|transmit)\w*(?:Weight|Probability)?)\s*(?:\*=|\+=|-=|/=)' -Message "$($entry.Name) modifies a Fresnel/reflection/transmission weight after Fresnel evaluation."
+    Require-NoMatch -Text $entry.Text -Pattern '(?i)\b[A-Za-z_]*depth[A-Za-z0-9_]*\b' -Message "$($entry.Name) water-interface Fresnel segment introduces a depth value that could boost Fresnel weights."
+}
+$fresnelScalarAliasPattern = '(?i)\b(?:float|half|double|int|uint)\s+(?=[A-Za-z0-9_]*(?:reflect(?:ion)?|transmi(?:t|ssion))[A-Za-z0-9_]*\b)(?=[A-Za-z0-9_]*(?:chance|weight|probability)[A-Za-z0-9_]*\b)[A-Za-z_][A-Za-z0-9_]*\b'
+Require-Match -Text $secondaryFresnelInterfaceCode -Pattern 'bool chooseReflection = rndf\(seed\) < F;' -Message 'Pass B dielectric selection is not the direct approved Fresnel probability.'
+Require-NoMatch -Text $secondaryFresnelInterfaceCode -Pattern $fresnelScalarAliasPattern -Message 'Pass B dielectric interface introduces a derived reflection/transmission chance, weight, or probability alias.'
+Require-Count -Text $primaryFresnelInterfaceCode -Pattern 'throughput\s*\*\s*F\b\s*(?=,)' -Expected 2 -Message 'Pass A must use exactly throughput * F followed directly by the continuation argument comma for its split and fallback reflections.'
+Require-Count -Text $primaryFresnelInterfaceCode -Pattern 'throughput\s*\*\s*\(1\.0\s*-\s*F\s*\)\s*(?=,)' -Expected 2 -Message 'Pass A must use exactly throughput * (1.0 - F) followed directly by the continuation argument comma for its split and fallback transmissions.'
+Require-NoMatch -Text $primaryFresnelInterfaceCode -Pattern $fresnelScalarAliasPattern -Message 'Pass A dielectric interface introduces a derived reflection/transmission chance, weight, or probability alias.'
+$passAContinuationPublicationCode = Get-Section -Text $primaryFresnelInterfaceCode `
+    -StartMarker 'PathSegment deferred = makePathSegment(' `
+    -EndMarker 'return continuation;'
+$passAContinuationThroughputAccessPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*(?:deferred|packedDeferred|reflected|continuation)(?:\s*\))*\s*\.\s*throughput\b'
+$passAUnpackRoundTripPattern = '(?-i)(?<![A-Za-z0-9_])unpackPathSegment\s*\('
+$passAPackedFieldMutationPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*packedDeferred(?:\s*\))*\s*\.\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\r\n]+\]))*\s*(?:(?:[+\-*/%&|^]?=|<<=|>>=)(?!=)|\+\+|--)'
+$passAObjectCompoundMutationPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*(?:deferred|packedDeferred|reflected|continuation)(?:\s*\))*\s*(?:(?:[+\-*/%&|^]|<<|>>)=|\+\+|--)'
+$passADeferredAssignmentPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*deferred(?:\s*\))*\s*=(?!=)'
+$passAPackedDeferredAssignmentPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*packedDeferred(?:\s*\))*\s*=(?!=)'
+$passAReflectedAssignmentPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*reflected(?:\s*\))*\s*=(?!=)'
+$passAContinuationAssignmentPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*continuation(?:\s*\))*\s*=(?!=)'
+Require-NoMatch -Text $passAContinuationPublicationCode -Pattern $passAContinuationThroughputAccessPattern -Message 'Pass A reads or mutates a deferred/reflected/continuation object throughput after its exact Fresnel construction.'
+Require-NoMatch -Text $passAContinuationPublicationCode -Pattern $passAUnpackRoundTripPattern -Message 'Pass A round-trips a continuation through unpackPathSegment after its exact Fresnel construction.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern $passAPackedFieldMutationPattern -Expected 1 -Message 'Pass A packed deferred continuation has a field mutation other than its one approved air-volume path flag update.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'packedDeferred\s*\.\s*pathFlags\s*\|=\s*PATH_AIR_VOLUME_CONSUMED\s*;' -Expected 1 -Message 'Pass A packed deferred continuation does not apply exactly one approved air-volume path flag update.'
+Require-NoMatch -Text $passAContinuationPublicationCode -Pattern $passAObjectCompoundMutationPattern -Message 'Pass A compound-mutates a deferred/reflected/continuation object after its approved initialization.'
+foreach ($entry in @(
+    @{ Name = 'deferred'; Pattern = $passADeferredAssignmentPattern; Expected = 1 },
+    @{ Name = 'packedDeferred'; Pattern = $passAPackedDeferredAssignmentPattern; Expected = 1 },
+    @{ Name = 'reflected'; Pattern = $passAReflectedAssignmentPattern; Expected = 1 },
+    @{ Name = 'continuation'; Pattern = $passAContinuationAssignmentPattern; Expected = 2 }
+)) {
+    Require-Count -Text $passAContinuationPublicationCode -Pattern $entry.Pattern -Expected $entry.Expected `
+        -Message "Pass A $($entry.Name) continuation is reassigned after its approved one-time branch initialization."
+}
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'PathSegment\s+deferred\s*=\s*makePathSegment\s*\(' -Expected 1 -Message 'Pass A deferred continuation does not have exactly one approved constructor initialization.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'PackedPathSegment\s+packedDeferred\s*=\s*packPathSegment\(\s*deferred\s*,\s*PATH_NO_NEXT\s*\)' -Expected 1 -Message 'Pass A packed deferred continuation does not have exactly one approved pack initialization.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'PathSegment\s+reflected\s*=\s*makePathSegment\s*\(' -Expected 1 -Message 'Pass A reflected continuation does not have exactly one approved constructor initialization.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern '(?m)^\s*continuation\s*=\s*makePathSegment\s*\(' -Expected 2 -Message 'Pass A fallback continuation branches do not each have one approved constructor initialization.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern '(?<![A-Za-z0-9_])packPathSegment\s*\(' -Expected 1 -Message 'Pass A continuation publication performs an extra pack/roundtrip after the approved deferred pack.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'queue\s*\[\s*splitRecord\s*\]\s*=(?!=)' -Expected 1 -Message 'Pass A deferred continuation queue slot is reassigned after its approved publication.'
+Require-Count -Text $passAContinuationPublicationCode -Pattern 'queue\s*\[\s*splitRecord\s*\]\s*=\s*packedDeferred\s*;' -Expected 1 -Message 'Pass A does not enqueue the exact packed deferred continuation directly.'
+$passAPathThroughputMutationPattern = '(?-i)(?<![A-Za-z0-9_.])(?:\(\s*)*(?:deferred|reflected|continuation)(?:\s*\))*\s*\.\s*throughput(?:\s*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\r\n]+\]))*\s*(?:(?:[+\-*/%&|^]?=|<<=|>>=)(?!=)|\+\+|--)'
+Require-NoMatch -Text $primaryFresnelInterfaceCode -Pattern $passAPathThroughputMutationPattern -Message 'Pass A mutates a continuation path throughput after applying its exact Fresnel constructor weight.'
+Require-Count -Text $primaryFresnelInterfaceCode -Pattern 'packPathSegment\(\s*deferred\s*,\s*PATH_NO_NEXT\s*\)' -Expected 1 -Message 'Pass A deferred continuation is not packed directly after its exact constructor weight.'
+Require-Count -Text $primaryFresnelInterfaceCode -Pattern '(?m)^\s*return\s+reflected\s*;' -Expected 1 -Message 'Pass A split reflection is not returned directly after its exact constructor weight.'
+Require-Count -Text $primaryFresnelInterfaceCode -Pattern '(?m)^\s*return\s+continuation\s*;' -Expected 1 -Message 'Pass A fallback continuation is not returned directly after its exact constructor weight.'
+$fresnelDepthBoostProbe = @'
+float F = fresnelDielectric(cosI, etaI, etaT);
+float depthBoost = waterHitT;
+F *= depthBoost;
+'@
+if ($fresnelDepthBoostProbe -notmatch '(?i)\b[A-Za-z_]*depth[A-Za-z0-9_]*\b') {
+    $failures.Add('Fresnel depth-boost probe did not trigger the narrow water-interface guard.')
+}
+$passBFresnelBypassProbe = @'
+float h = payload.hitT;
+float reflectChance = F * h;
+bool chooseReflection = rndf(seed) < reflectChance;
+'@
+$passAFresnelAliasProbe = @'
+float transmissionWeight = 1.0 - F;
+PathSegment deferred = makePathSegment(ro, rd, throughput * transmissionWeight, medium);
+'@
+foreach ($probe in @($passBFresnelBypassProbe, $passAFresnelAliasProbe)) {
+    if ($probe -notmatch $fresnelScalarAliasPattern) {
+        $failures.Add('Fresnel probability/weight alias probe did not trigger the narrow water-interface guard.')
+    }
+}
+if ($passBFresnelBypassProbe -match 'bool chooseReflection = rndf\(seed\) < F;') {
+    $failures.Add('Pass B direct-Fresnel selection probe accepted the reviewer bypass.')
+}
+$passAReflectionSuffixProbe = 'PathSegment reflected = makePathSegment(ro, rd, throughput * F * payload.hitT, medium);'
+$passATransmissionSuffixProbe = 'PathSegment deferred = makePathSegment(ro, rd, throughput * (1.0 - F) * payload.hitT, medium);'
+foreach ($probe in @($passAReflectionSuffixProbe, $passATransmissionSuffixProbe)) {
+    if ($probe -match 'throughput\s*\*\s*F\b\s*(?=,)' -or $probe -match 'throughput\s*\*\s*\(1\.0\s*-\s*F\s*\)\s*(?=,)') {
+        $failures.Add('Pass A exact continuation-weight predicate accepted a suffix bypass.')
+    }
+}
+$passADeferredMutationProbe = @'
+PathSegment deferred = makePathSegment(ro, rd, throughput * (1.0 - F), medium);
+deferred.throughput *= payload.hitT;
+PackedPathSegment packedDeferred = packPathSegment(deferred, PATH_NO_NEXT);
+'@
+$passAReflectedMutationProbe = @'
+PathSegment reflected = makePathSegment(ro, rd, throughput * F, medium);
+reflected.throughput *= payload.hitT;
+return reflected;
+'@
+foreach ($probe in @($passADeferredMutationProbe, $passAReflectedMutationProbe)) {
+    if ([regex]::Matches($probe, $passAPathThroughputMutationPattern).Count -ne 1) {
+        $failures.Add('Pass A post-construction throughput-mutation probe did not trigger the interface guard.')
+    }
+}
+$passAPackedThroughputMutationProbe = @'
+PackedPathSegment packedDeferred = packPathSegment(deferred, PATH_NO_NEXT);
+packedDeferred.pathFlags |= PATH_AIR_VOLUME_CONSUMED;
+packedDeferred.throughput = packRgb9e5(
+        unpackRgb9e5(packedDeferred.throughput) * payload.hitT);
+queue[splitRecord] = packedDeferred;
+'@
+$passAPackedAliasRoundTripProbe = @'
+PackedPathSegment packedDeferred = packPathSegment(deferred, PATH_NO_NEXT);
+packedDeferred.pathFlags |= PATH_AIR_VOLUME_CONSUMED;
+PackedPathSegment packedAlias = packedDeferred;
+PathSegment unpackedAlias = unpackPathSegment(packedAlias);
+unpackedAlias.throughput *= payload.hitT;
+packedDeferred = packPathSegment(unpackedAlias, PATH_NO_NEXT);
+queue[splitRecord] = packedDeferred;
+'@
+if ([regex]::Matches($passAPackedThroughputMutationProbe, $passAContinuationThroughputAccessPattern).Count -ne 2 `
+        -or [regex]::Matches($passAPackedThroughputMutationProbe, $passAPackedFieldMutationPattern).Count -ne 2) {
+    $failures.Add('Pass A packed-throughput reviewer probe did not trigger the packed continuation integrity guard.')
+}
+if ([regex]::Matches($passAPackedAliasRoundTripProbe, $passAUnpackRoundTripPattern).Count -ne 1 `
+        -or [regex]::Matches($passAPackedAliasRoundTripProbe, $passAPackedDeferredAssignmentPattern).Count -ne 2) {
+    $failures.Add('Pass A packed alias/roundtrip probe did not trigger the unpack/reassignment integrity guards.')
+}
+$passAParenthesizedPackedThroughputProbe = @'
+PackedPathSegment packedDeferred = packPathSegment(deferred, PATH_NO_NEXT);
+packedDeferred.pathFlags |= PATH_AIR_VOLUME_CONSUMED;
+(packedDeferred).throughput = packRgb9e5(
+        unpackRgb9e5((packedDeferred).throughput) * payload.hitT);
+queue[splitRecord] = packedDeferred;
+'@
+if ([regex]::Matches($passAParenthesizedPackedThroughputProbe, $passAContinuationThroughputAccessPattern).Count -ne 2 `
+        -or [regex]::Matches($passAParenthesizedPackedThroughputProbe, $passAPackedFieldMutationPattern).Count -ne 2) {
+    $failures.Add('Pass A parenthesized packed-throughput probe bypassed both direct member guards.')
+}
 Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 shallowEmerald = float3\(0\.08, 0\.72, 0\.46\);' -Message 'Water volume does not use the approved shallow emerald palette endpoint.'
 Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 deepCyan = float3\(0\.04, 0\.36, 0\.68\);' -Message 'Water volume does not use the approved deep cyan palette endpoint.'
 Require-Match -Text $waterScatterPaletteCode -Pattern 'return lerp\(shallowEmerald, deepCyan, depthMix\);' -Message 'Water volume does not interpolate the approved emerald/cyan palette endpoints.'
@@ -572,8 +829,8 @@ Require-Match -Text $secondary -Pattern 'float3 prefixRadiance = outImage\[pix\]
 Require-Match -Text $secondary -Pattern 'outImage\[pix\] = float4\(prefixRadiance \+ frameRadiance / float\(spp\), 1\.0\);' -Message 'Pass B does not add the Pass A prefix after averaging its continuation samples.'
 Require-Match -Text $guides -Pattern 'import water_volume;' -Message 'Transmission guides do not share the effective water extinction implementation.'
 Require-NoMatch -Text $guides -Pattern 'integrateWaterSingleScatter\(' -Message 'Transmission guides must remain radiance-free and contain absorption only.'
-Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "Scales underwater emerald/cyan haze and Tyndall shafts. Direct water absorption and deep-water transmission stay fixed."')) -Message 'English Water Fog Strength tooltip does not describe scattering-only control.'
-Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "调整水下翠绿/青蓝雾气和丁达尔光束；水体直接吸收与深水透射保持不变。"')) -Message 'Chinese Water Fog Strength tooltip does not describe scattering-only control.'
+Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "Controls underwater turbidity, deep-water visibility, emerald/cyan haze, and Tyndall shafts. Clear-water absorption stays fixed."')) -Message 'English Water Fog Strength tooltip does not describe scattering extinction control.'
+Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "控制水下浑浊度、深水能见度、翠绿/青蓝雾气和丁达尔光束；清水基础吸收保持不变。"')) -Message 'Chinese Water Fog Strength tooltip does not describe scattering extinction control.'
 Require-Match -Text $english -Pattern '"caustica\.options\.rt\.waterWaveStrength": "Water Wave Strength"' -Message 'English Water Wave Strength name is missing.'
 Require-Match -Text $english -Pattern '"caustica\.options\.rt\.waterWaveStrength\.tooltip"' -Message 'English Water Wave Strength tooltip is missing.'
 Require-Match -Text $chinese -Pattern '"caustica\.options\.rt\.waterWaveStrength": "水波幅度"' -Message 'Chinese Water Wave Strength name is missing.'
