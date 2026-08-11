@@ -1,5 +1,13 @@
 # Bug 记录
 
+## WG-031：深水过度透明且缺少独立透明度控制
+
+- 现象：Water Fog Strength 同时改变直达透射与散射雾气，无法独立调节水底能见度；默认深水仍过度透明。
+- 原因：`waterEffectiveExtinction()` 将 Water Fog 的散射系数直接加入直达消光，且 `WorldPush.waterTuning.y` 尚未发布独立透明度参数。
+- 解决：新增持久化 Water Transparency `0–200%` 滑杆，通过 `waterTuning.y` 发布；水体额外消光按 `0.14 × (1 - clamp(transparency × 0.5, 0, 1))` 计算，Pass A、Pass B 与 Transmission Guide 共用该结果；Water Fog 仅控制翠绿/青蓝散射与丁达尔光束。
+- 自动证据：契约先 RED 后 GREEN，锁定配置/UI/双语文本/ABI/三个消费者及 `5m/10m` 数值锚点；聚焦水体 JUnit、两份源码契约和强制真实 Shader 编译通过，ABI 保持 `672` 字节及 `384/388/392/396/400` 偏移。
+- 状态：最小修复与自动验证已完成；透明度 × 深度 × 水雾的游戏内画面和 GPU 帧时仍待验证。
+
 ## WG-030：Water Fog 强度滑条未参与有效消光
 
 - 现象：Water Fog Strength 滑条已发布，但 `waterEffectiveExtinction()` 忽略其数值，深水水底辐亮度仍占主导。

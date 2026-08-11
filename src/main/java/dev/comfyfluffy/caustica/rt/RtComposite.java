@@ -142,6 +142,10 @@ public final class RtComposite {
         return CausticaConfig.Rt.Composite.WATER_FOG_STRENGTH.value();
     }
 
+    private static float waterTransparency() {
+        return CausticaConfig.Rt.Composite.WATER_TRANSPARENCY.value();
+    }
+
     private static boolean airFog() {
         return CausticaConfig.Rt.Composite.AIR_FOG.value();
     }
@@ -966,7 +970,7 @@ public final class RtComposite {
                     airVolume,
                     waterParams,
                     waterAnchor,
-                    new Float4(waterWaveStrength(), 0.0f, 0.0f, 0.0f),
+                    new Float4(waterWaveStrength(), waterTransparency(), 0.0f, 0.0f),
                     mvCurProjView,
                     breaking.length,
                     breaking,

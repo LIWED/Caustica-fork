@@ -12,12 +12,14 @@ import trace;
 public static const uint WATER_VOLUME_SLICE_COUNT = 8u;
 public static const float WATER_VOLUME_MAX_DISTANCE = 48.0;
 public static const float3 WATER_SCATTERING_COEFFICIENT = float3(0.018, 0.018, 0.018);
+public static const float3 WATER_TRANSPARENCY_EXTINCTION_MAX = float3(0.14, 0.14, 0.14);
 
-public float3 waterEffectiveExtinction(float3 baseExtinction, bool water, bool waterFog,
-                                       float waterFogStrength) {
-    if (!water || !waterFog) return baseExtinction;
-    float strength = clamp(waterFogStrength, 0.0, 2.0);
-    return baseExtinction + WATER_SCATTERING_COEFFICIENT * strength;
+public float3 waterEffectiveExtinction(float3 baseExtinction, bool water,
+                                       float waterTransparency) {
+    if (!water) return baseExtinction;
+    float clarity = clamp(waterTransparency * 0.5, 0.0, 1.0);
+    float3 extraExtinction = WATER_TRANSPARENCY_EXTINCTION_MAX * (1.0 - clarity);
+    return baseExtinction + extraExtinction;
 }
 
 public float3 waterScatterPalette(float3 transmittance) {
@@ -30,7 +32,8 @@ public float3 waterScatterPalette(float3 transmittance) {
 }
 
 public float3 integrateWaterSingleScatter(float3 rayOrigin, float3 rayDir, float segmentDistance,
-                                          float3 effectiveExtinction, float3 segmentTransmittance,
+                                          float3 baseExtinction, float3 effectiveExtinction,
+                                          float3 segmentTransmittance,
                                           float3 lightRadiance, float3 lightDir,
                                           float waterFogStrength, uint volumeSeed) {
     float strength = clamp(waterFogStrength, 0.0, 2.0);
@@ -41,8 +44,9 @@ public float3 integrateWaterSingleScatter(float3 rayOrigin, float3 rayDir, float
     }
 
     float3 scatteringCoefficient = WATER_SCATTERING_COEFFICIENT * strength;
+    float3 referenceExtinction = baseExtinction + scatteringCoefficient;
     float3 scatteringFraction = clamp(scatteringCoefficient
-            / max(effectiveExtinction, float3(1.0e-5, 1.0e-5, 1.0e-5)), 0.0, 1.0);
+            / max(referenceExtinction, float3(1.0e-5, 1.0e-5, 1.0e-5)), 0.0, 1.0);
     float3 palette = waterScatterPalette(segmentTransmittance);
     float3 lostEnergy = clamp(1.0 - segmentTransmittance, 0.0, 1.0);
     float3 result = lostEnergy * scatteringFraction * palette * (0.080 * daylight);

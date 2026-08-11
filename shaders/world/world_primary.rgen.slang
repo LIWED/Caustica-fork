@@ -114,14 +114,14 @@ public PathSegment tracePrimary(PathSegment seg,
         // the record for the next trace. The terminal hit above is deliberately not consumed here.
         if (any(medium.current.extinction > 0.0)) {
             float3 effectiveExtinction = waterEffectiveExtinction(
-                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+                    medium.current.extinction, medium.current.water, worldPush.waterTuning.y);
             float3 segmentTransmittance = exp(-effectiveExtinction * payload.hitT);
             if (medium.current.water && waterFog && waterFogStrength > 0.0) {
                 float3 rawLightDirForWater = worldPush.lightDir.xyz;
                 float lightDirLengthSq = dot(rawLightDirForWater, rawLightDirForWater);
                 float3 lightDirForWater = rawLightDirForWater * rsqrt(max(lightDirLengthSq, 1.0e-8));
                 prefixRadiance += throughput * integrateWaterSingleScatter(
-                        ro, rd, payload.hitT, effectiveExtinction, segmentTransmittance,
+                        ro, rd, payload.hitT, medium.current.extinction, effectiveExtinction, segmentTransmittance,
                         worldPush.lightRadiance.xyz, lightDirForWater, waterFogStrength, seed);
             }
             throughput *= segmentTransmittance;

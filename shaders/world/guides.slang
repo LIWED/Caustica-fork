@@ -176,10 +176,8 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
                 rayConeWidth, rayConeSpread);
         float segmentDistance = payload.hitT > 0.0 ? payload.hitT : 10000.0;
         if (any(medium.current.extinction > 0.0)) {
-            bool waterFog = (worldPush.flags & 32u) != 0u;
-            float waterFogStrength = clamp(worldPush.waterAnchor.w, 0.0, 2.0);
             float3 effectiveExtinction = waterEffectiveExtinction(
-                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+                    medium.current.extinction, medium.current.water, worldPush.waterTuning.y);
             guideFilter *= exp(-effectiveExtinction * segmentDistance);
         }
         if (payload.hitT <= 0.0) {

@@ -271,11 +271,12 @@ $secondaryFresnelInterfaceCode = Get-Section -Text $secondaryCode `
     -StartMarker 'bool isWater = material == MATERIAL_WATER;' `
     -EndMarker 'showCelestial = true;'
 # Pass B must attenuate both finite hits and its finite sky horizon before either branch consumes radiance.
-Require-Match -Text $secondary -Pattern '(?s)float segmentDistance = payload\.hitT < 0\.0 \? 10000\.0 : payload\.hitT;.*?float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, waterFog, waterFogStrength\);.*?float3 segmentTransmittance = exp\(-effectiveExtinction \* segmentDistance\);.*?throughput \*= segmentTransmittance;.*?if \(payload\.hitT < 0\.0\)' -Message 'Pass B does not apply effective water extinction before the hit/miss split.'
+Require-Match -Text $secondary -Pattern '(?s)float segmentDistance = payload\.hitT < 0\.0 \? 10000\.0 : payload\.hitT;.*?float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, worldPush\.waterTuning\.y\);.*?float3 segmentTransmittance = exp\(-effectiveExtinction \* segmentDistance\);.*?throughput \*= segmentTransmittance;.*?if \(payload\.hitT < 0\.0\)' -Message 'Pass B does not apply transparency-controlled water extinction over the actual segment before the hit/miss split.'
+Require-Match -Text $primary -Pattern '(?s)float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, worldPush\.waterTuning\.y\);.*?float3 segmentTransmittance = exp\(-effectiveExtinction \* payload\.hitT\);.*?throughput \*= segmentTransmittance;' -Message 'Pass A does not apply transparency-controlled water extinction over the actual consumed segment.'
 Require-NoMatch -Text $secondary -Pattern 'medium\.current\.extinction \* payload\.hitT' -Message 'Pass B still contains the old finite-hit-only Beer attenuation.'
 
 # The deterministic transmission guide owns the attenuation for every segment it walks.
-Require-Match -Text $guideWalkerCode -Pattern '(?s)float segmentDistance = payload\.hitT > 0\.0 \? payload\.hitT : 10000\.0;.*?float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, waterFog, waterFogStrength\);.*?guideFilter \*= exp\(-effectiveExtinction \* segmentDistance\);.*?if \(payload\.hitT <= 0\.0\)' -Message 'Transmission guide does not use the same effective water extinction as radiance paths.'
+Require-Match -Text $guideWalkerCode -Pattern '(?s)float segmentDistance = payload\.hitT > 0\.0 \? payload\.hitT : 10000\.0;.*?float3 effectiveExtinction = waterEffectiveExtinction\(\s*medium\.current\.extinction, medium\.current\.water, worldPush\.waterTuning\.y\);.*?guideFilter \*= exp\(-effectiveExtinction \* segmentDistance\);.*?if \(payload\.hitT <= 0\.0\)' -Message 'Transmission guide does not use the same transparency-controlled extinction and actual segment distance as radiance paths.'
 Require-NoMatch -Text $guideWalkerCode -Pattern '(?m)^\s*guideFilter\s*=.*payload\.albedo.*$|^\s*guideFilter\s*\*=.*payload\.albedo.*$' -Message 'Transmission guide still double-counts dielectric tint at an interface.'
 Require-Match -Text $primary -Pattern '(?s)resolveTransmissionGuide\(hitPos, transmittedDir, previousTransmittedDir, geometricNormal,\s*guideMedium, transmitBias, rayConeWidth, rayConeSpread,\s*float3\(1\.0, 1\.0, 1\.0\)\);' -Message 'Pass A does not seed the transmission guide with current/previous directions and a neutral interface filter.'
 
@@ -454,22 +455,22 @@ Require-NoMatch -Text $secondary -Pattern 'waterCaustic\([^;]*shadow(Back)?\.wat
 function Get-WaterEffectiveExtinctionCpu {
     param(
         [double[]] $BaseExtinction,
-        [double[]] $ScatteringCoefficient,
         [bool] $Water,
-        [bool] $WaterFog,
-        [double] $WaterFogStrength
+        [double] $WaterTransparency
     )
 
-    if (-not $Water -or -not $WaterFog) {
+    if (-not $Water) {
         return [double[]]@($BaseExtinction)
     }
-    $strength = [Math]::Min([Math]::Max($WaterFogStrength, 0.0), 2.0)
+    $clarity = [Math]::Min([Math]::Max($WaterTransparency * 0.5, 0.0), 1.0)
+    $extraExtinction = 0.14 * (1.0 - $clarity)
     return [double[]](0..2 | ForEach-Object {
-        $BaseExtinction[$_] + $ScatteringCoefficient[$_] * $strength
+        $BaseExtinction[$_] + $extraExtinction
     })
 }
 
-# Direct absorption stays visibly clear nearby, becomes cyan with depth, and is independent of Water Fog Strength.
+# Direct absorption is calibrated independently from Water Fog. Higher transparency must increase
+# transmission, greater depth must decrease it, and the approved 5/10-block anchors are literal fixtures.
 $approvedWaterBase = @(0.118, 0.052, 0.058)
 $defaultTint = @(0.25, 0.46, 0.90)
 $waterAbsorptionBaseMatch = [regex]::Match(
@@ -493,129 +494,75 @@ if (-not $waterAbsorptionBaseMatch.Success -or -not $waterBiomeAbsorptionMatch.S
     $productionExtinction = 0..2 | ForEach-Object {
         $productionWaterBase[$_] + $productionBiomeAbsorption * (1.0 - $defaultTint[$_])
     }
-    $waterScatteringCoefficientMatch = [regex]::Match(
-        $waterVolumeCode,
-        'public\s+static\s+const\s+float3\s+WATER_SCATTERING_COEFFICIENT\s*=\s*float3\(\s*(?<red>\d+\.\d+)\s*,\s*(?<green>\d+\.\d+)\s*,\s*(?<blue>\d+\.\d+)\s*\);'
-    )
-    if (-not $waterScatteringCoefficientMatch.Success) {
-        $failures.Add('Production water scattering coefficient could not be parsed for the fog-depth anchors.')
-    } else {
-        $waterScatteringCoefficient = @(
-            [double]::Parse($waterScatteringCoefficientMatch.Groups['red'].Value, $culture),
-            [double]::Parse($waterScatteringCoefficientMatch.Groups['green'].Value, $culture),
-            [double]::Parse($waterScatteringCoefficientMatch.Groups['blue'].Value, $culture)
-        )
-        foreach ($channel in 0..2) {
-            if ([Math]::Abs($waterScatteringCoefficient[$channel] - 0.018) -gt 1.0e-12) {
-                $failures.Add('Water scattering coefficient is not exactly 0.018 in every channel.')
-                break
-            }
+    $effectiveExtinctionByTransparency = @{}
+    foreach ($transparency in @(-1, 0, 1, 2, 3)) {
+        $effectiveExtinctionByTransparency[$transparency] = Get-WaterEffectiveExtinctionCpu `
+            -BaseExtinction $productionExtinction -Water $true -WaterTransparency $transparency
+    }
+    $nonWaterExtinction = Get-WaterEffectiveExtinctionCpu `
+        -BaseExtinction $productionExtinction -Water $false -WaterTransparency 0
+    foreach ($channel in 0..2) {
+        if ([Math]::Abs($nonWaterExtinction[$channel] - $productionExtinction[$channel]) -gt 1.0e-12) {
+            $failures.Add('Water Transparency CPU mirror changes non-water extinction.')
+            break
         }
+        $belowRangeDelta = [Math]::Abs($effectiveExtinctionByTransparency[-1][$channel] `
+                - $effectiveExtinctionByTransparency[0][$channel])
+        $aboveRangeDelta = [Math]::Abs($effectiveExtinctionByTransparency[3][$channel] `
+                - $effectiveExtinctionByTransparency[2][$channel])
+        if ($belowRangeDelta -gt 1.0e-12 -or $aboveRangeDelta -gt 1.0e-12) {
+            $failures.Add('Water Transparency CPU mirror does not clamp below 0 or above 2.')
+            break
+        }
+    }
 
-        $effectiveExtinctionByStrength = @{}
-        foreach ($strength in @(-1, 0, 1, 2, 3)) {
-            $effectiveExtinctionByStrength[$strength] = Get-WaterEffectiveExtinctionCpu `
-                -BaseExtinction $productionExtinction -ScatteringCoefficient $waterScatteringCoefficient `
-                -Water $true -WaterFog $true -WaterFogStrength $strength
+    $expectedTransparencyAnchors = @{
+        5 = @{ 0 = @(0.241, 0.348, 0.365); 1 = @(0.343, 0.494, 0.519); 2 = @(0.486, 0.702, 0.735) }
+        10 = @{ 0 = @(0.058, 0.121, 0.133); 1 = @(0.117, 0.244, 0.269); 2 = @(0.236, 0.492, 0.541) }
+    }
+    $waterTransparencyTransmission = @{}
+    foreach ($distance in @(1, 5, 10, 20)) {
+        $waterTransparencyTransmission[$distance] = @{}
+        foreach ($transparency in @(0, 1, 2)) {
+            $values = @($effectiveExtinctionByTransparency[$transparency] |
+                    ForEach-Object { [Math]::Exp(-$_ * $distance) })
+            $waterTransparencyTransmission[$distance][$transparency] = $values
+            Write-Host ('Water transparency transmission {0,2} block(s), t{1}: R={2:F6}, G={3:F6}, B={4:F6}' -f `
+                    $distance, $transparency, $values[0], $values[1], $values[2])
         }
-        $waterFogBranchCases = @(
-            @{ Name = 'non-water'; Water = $false; WaterFog = $true; Strength = 1; EffectiveStrength = 0 },
-            @{ Name = 'fog-off'; Water = $true; WaterFog = $false; Strength = 1; EffectiveStrength = 0 },
-            @{ Name = 'strength 0'; Water = $true; WaterFog = $true; Strength = 0; EffectiveStrength = 0 },
-            @{ Name = 'strength below 0'; Water = $true; WaterFog = $true; Strength = -1; EffectiveStrength = 0 },
-            @{ Name = 'strength 1'; Water = $true; WaterFog = $true; Strength = 1; EffectiveStrength = 1 },
-            @{ Name = 'strength 2'; Water = $true; WaterFog = $true; Strength = 2; EffectiveStrength = 2 },
-            @{ Name = 'strength above 2'; Water = $true; WaterFog = $true; Strength = 3; EffectiveStrength = 2 }
-        )
-        foreach ($case in $waterFogBranchCases) {
-            $actual = Get-WaterEffectiveExtinctionCpu -BaseExtinction $productionExtinction `
-                -ScatteringCoefficient $waterScatteringCoefficient -Water $case.Water -WaterFog $case.WaterFog `
-                -WaterFogStrength $case.Strength
+    }
+    foreach ($distance in @(5, 10)) {
+        foreach ($transparency in @(0, 1, 2)) {
+            $actual = $waterTransparencyTransmission[$distance][$transparency]
+            $expected = $expectedTransparencyAnchors[$distance][$transparency]
             foreach ($channel in 0..2) {
-                $expected = $productionExtinction[$channel] + $waterScatteringCoefficient[$channel] * $case.EffectiveStrength
-                if ([Math]::Abs($actual[$channel] - $expected) -gt 1.0e-12) {
-                    $failures.Add("Water Fog CPU mirror does not preserve the $($case.Name) helper branch/clamp result.")
+                if ([Math]::Abs($actual[$channel] - $expected[$channel]) -gt 0.003) {
+                    $failures.Add("Water Transparency anchor at $distance block(s), t$transparency is outside tolerance 0.003.")
                     break
                 }
             }
         }
-        $expectedWaterFogAnchors = @{
-            10 = @{ 0 = @(0.236, 0.492, 0.541); 1 = @(0.197, 0.411, 0.452); 2 = @(0.165, 0.343, 0.377) }
-            20 = @{ 0 = @(0.056, 0.242, 0.292); 1 = @(0.039, 0.169, 0.204); 2 = @(0.027, 0.118, 0.142) }
-        }
-        $waterFogTransmission = @{}
-        foreach ($distance in @(1, 5, 10, 20)) {
-            $waterFogTransmission[$distance] = @{}
-            foreach ($strength in @(0, 1, 2)) {
-                $values = @($effectiveExtinctionByStrength[$strength] | ForEach-Object { [Math]::Exp(-$_ * $distance) })
-                $waterFogTransmission[$distance][$strength] = $values
-                Write-Host ('Water Fog transmission {0,2} block(s), s{1}: R={2:F6}, G={3:F6}, B={4:F6}' -f `
-                        $distance, $strength, $values[0], $values[1], $values[2])
-            }
-        }
-        foreach ($distance in @(10, 20)) {
-            foreach ($strength in @(0, 1, 2)) {
-                $actual = $waterFogTransmission[$distance][$strength]
-                $expected = $expectedWaterFogAnchors[$distance][$strength]
-                foreach ($channel in 0..2) {
-                    if ([Math]::Abs($actual[$channel] - $expected[$channel]) -gt 0.003) {
-                        $failures.Add("Water Fog transmission anchor at $distance block(s), s$strength is outside tolerance 0.003.")
-                        break
-                    }
-                }
-            }
-        }
-        foreach ($distance in @(1, 5, 10, 20)) {
-            foreach ($channel in 0..2) {
-                if (-not ($waterFogTransmission[$distance][0][$channel] -gt $waterFogTransmission[$distance][1][$channel] `
-                        -and $waterFogTransmission[$distance][1][$channel] -gt $waterFogTransmission[$distance][2][$channel])) {
-                    $failures.Add("Water Fog transmission at $distance block(s) is not strictly ordered s0 > s1 > s2.")
-                }
-            }
-        }
-        foreach ($strength in @(0, 1, 2)) {
-            foreach ($channel in 0..2) {
-                if (-not ($waterFogTransmission[1][$strength][$channel] -gt $waterFogTransmission[5][$strength][$channel] `
-                        -and $waterFogTransmission[5][$strength][$channel] -gt $waterFogTransmission[10][$strength][$channel] `
-                        -and $waterFogTransmission[10][$strength][$channel] -gt $waterFogTransmission[20][$strength][$channel])) {
-                    $failures.Add("Water Fog transmission at s$strength is not strictly distance-monotonic in every channel.")
-                }
-            }
-        }
     }
-    $productionTransmission = @{}
     foreach ($distance in @(1, 5, 10, 20)) {
-        $values = @($productionExtinction | ForEach-Object { [Math]::Exp(-$_ * $distance) })
-        $productionTransmission[$distance] = $values
-        Write-Host ('Water transmission {0,2} block(s): R={1:F6}, G={2:F6}, B={3:F6}' -f `
-                $distance, $values[0], $values[1], $values[2])
-    }
-
-    $oneBlock = $productionTransmission[1]
-    if ($oneBlock[0] -le 0.85 -or $oneBlock[1] -le 0.85 -or $oneBlock[2] -le 0.85) {
-        $failures.Add('One-block water transmission must be greater than 0.85 in every channel.')
-    }
-    $tenBlocks = $productionTransmission[10]
-    if ($tenBlocks[0] -lt 0.20 -or $tenBlocks[0] -gt 0.27) { $failures.Add('Ten-block red transmission is outside 0.20..0.27.') }
-    if ($tenBlocks[1] -lt 0.44 -or $tenBlocks[1] -gt 0.54) { $failures.Add('Ten-block green transmission is outside 0.44..0.54.') }
-    if ($tenBlocks[2] -lt 0.49 -or $tenBlocks[2] -gt 0.60) { $failures.Add('Ten-block blue transmission is outside 0.49..0.60.') }
-    $twentyBlocks = $productionTransmission[20]
-    if ($twentyBlocks[0] -lt 0.04 -or $twentyBlocks[0] -gt 0.07) { $failures.Add('Twenty-block red transmission is outside 0.04..0.07.') }
-    if ($twentyBlocks[1] -lt 0.19 -or $twentyBlocks[1] -gt 0.29) { $failures.Add('Twenty-block green transmission is outside 0.19..0.29.') }
-    if ($twentyBlocks[2] -lt 0.24 -or $twentyBlocks[2] -gt 0.35) { $failures.Add('Twenty-block blue transmission is outside 0.24..0.35.') }
-
-    foreach ($distance in @(1, 5, 10, 20)) {
-        $values = $productionTransmission[$distance]
-        if (-not ($values[2] -gt $values[1] -and $values[1] -gt $values[0])) {
-            $failures.Add("Water transmission at $distance block(s) is not ordered B > G > R.")
+        foreach ($channel in 0..2) {
+            if (-not ($waterTransparencyTransmission[$distance][0][$channel] `
+                    -lt $waterTransparencyTransmission[$distance][1][$channel] `
+                    -and $waterTransparencyTransmission[$distance][1][$channel] `
+                    -lt $waterTransparencyTransmission[$distance][2][$channel])) {
+                $failures.Add("Water Transparency transmission at $distance block(s) is not strictly ordered t0 < t1 < t2.")
+            }
         }
     }
-    foreach ($channel in 0..2) {
-        if (-not ($productionTransmission[1][$channel] -gt $productionTransmission[5][$channel] `
-                -and $productionTransmission[5][$channel] -gt $productionTransmission[10][$channel] `
-                -and $productionTransmission[10][$channel] -gt $productionTransmission[20][$channel])) {
-            $channelName = @('red', 'green', 'blue')[$channel]
-            $failures.Add("Water $channelName transmission does not strictly decrease across 1/5/10/20 blocks.")
+    foreach ($transparency in @(0, 1, 2)) {
+        foreach ($channel in 0..2) {
+            if (-not ($waterTransparencyTransmission[1][$transparency][$channel] `
+                    -gt $waterTransparencyTransmission[5][$transparency][$channel] `
+                    -and $waterTransparencyTransmission[5][$transparency][$channel] `
+                    -gt $waterTransparencyTransmission[10][$transparency][$channel] `
+                    -and $waterTransparencyTransmission[10][$transparency][$channel] `
+                    -gt $waterTransparencyTransmission[20][$transparency][$channel])) {
+                $failures.Add("Water Transparency transmission at t$transparency is not strictly distance-monotonic in every channel.")
+            }
         }
     }
 }
@@ -628,7 +575,9 @@ Require-Match -Text $waterVolume -Pattern 'public static const uint WATER_VOLUME
 Require-Match -Text $waterVolume -Pattern 'public static const float WATER_VOLUME_MAX_DISTANCE = 48\.0;' -Message 'Water volume shadow integration is not capped at 48 blocks.'
 Require-NoMatch -Text $waterVolumeCode -Pattern 'WATER_TURBIDITY_EXTINCTION' -Message 'The obsolete turbidity-extinction constant name remains in production code.'
 Require-Match -Text $waterVolumeCode -Pattern 'public static const float3 WATER_SCATTERING_COEFFICIENT = float3\(0\.018, 0\.018, 0\.018\);' -Message 'Water scattering has no explicitly named coefficient.'
-Require-Match -Text $waterEffectiveExtinctionCode -Pattern '(?s)^public float3 waterEffectiveExtinction\(.*?\)\s*\{\s*if \(!water \|\| !waterFog\) return baseExtinction;\s*float strength = clamp\(waterFogStrength, 0\.0, 2\.0\);\s*return baseExtinction \+ WATER_SCATTERING_COEFFICIENT \* strength;\s*\}$' -Message 'Effective extinction does not add clamped Water Fog scattering only for water with fog enabled.'
+Require-Match -Text $waterVolumeCode -Pattern 'public static const float3 WATER_TRANSPARENCY_EXTINCTION_MAX = float3\(0\.14, 0\.14, 0\.14\);' -Message 'Water transparency has no approved 0.14 maximum extra-extinction constant.'
+Require-Match -Text $waterEffectiveExtinctionCode -Pattern '(?s)^public float3 waterEffectiveExtinction\(float3 baseExtinction, bool water,\s*float waterTransparency\)\s*\{\s*if \(!water\) return baseExtinction;\s*float clarity = clamp\(waterTransparency \* 0\.5, 0\.0, 1\.0\);\s*float3 extraExtinction = WATER_TRANSPARENCY_EXTINCTION_MAX \* \(1\.0 - clarity\);\s*return baseExtinction \+ extraExtinction;\s*\}$' -Message 'Effective extinction does not implement the approved independent transparency mapping or non-water passthrough.'
+Require-NoMatch -Text $waterEffectiveExtinctionCode -Pattern 'waterFog|waterFogStrength|WATER_SCATTERING_COEFFICIENT' -Message 'Direct water extinction still depends on Water Fog or its scattering coefficient.'
 Require-Match -Text $primaryFresnelInterfaceCode -Pattern 'float F = fresnelDielectric\(clamp\(dot\(-rd, n\), 0\.0, 1\.0\), etaI, etaT\);' -Message 'Pass A Fresnel input is not restricted to the incident interface normal and IOR pair.'
 Require-Match -Text $secondaryFresnelInterfaceCode -Pattern '(?s)float cosI = clamp\(dot\(-rd, n\), 0\.0, 1\.0\);\s*float F = fresnelDielectric\(cosI, etaI, etaT\);' -Message 'Pass B Fresnel input is not restricted to the incident interface normal and IOR pair.'
 foreach ($entry in @(
@@ -774,7 +723,8 @@ Require-Match -Text $waterVolume -Pattern '(?s)float3 viewTransmittance = float3
 Require-Match -Text $waterVolume -Pattern 'result \+= viewTransmittance \* sliceScatteredEnergy' -Message 'Water slice energy does not use the exact slice-start transmittance.'
 Require-NoMatch -Text $waterVolume -Pattern 'halfStepTransmittance|viewToSample' -Message 'Water slice energy still applies a duplicate half-step attenuation.'
 Require-Match -Text $integrateWaterSingleScatterCode -Pattern '(?s)float strength = clamp\(waterFogStrength, 0\.0, 2\.0\);.*?float daylight = clamp\(.*?\);.*?if \(daylight <= 0\.0 \|\| strength <= 0\.0\) \{\s*return float3\(0\.0, 0\.0, 0\.0\);\s*\}' -Message 'Water scattering does not clamp strength or return zero for zero strength/daylight.'
-Require-Match -Text $integrateWaterSingleScatterCode -Pattern '(?s)float3 scatteringCoefficient = WATER_SCATTERING_COEFFICIENT \* strength;.*?float3 scatteringFraction = clamp\(scatteringCoefficient\s*/ max\(effectiveExtinction, float3\(1\.0e-5.*?sliceScatteredEnergy = sliceLostEnergy \* scatteringFraction;' -Message 'Water volume does not keep its scattering coefficient separate from direct absorption.'
+Require-Match -Text $integrateWaterSingleScatterCode -Pattern '(?s)^public float3 integrateWaterSingleScatter\(.*?float3 baseExtinction, float3 effectiveExtinction,\s*float3 segmentTransmittance,.*?\)' -Message 'Water scattering does not receive both base and transparency-effective extinction.'
+Require-Match -Text $integrateWaterSingleScatterCode -Pattern '(?s)float3 scatteringCoefficient = WATER_SCATTERING_COEFFICIENT \* strength;.*?float3 referenceExtinction = baseExtinction \+ scatteringCoefficient;.*?float3 scatteringFraction = clamp\(scatteringCoefficient\s*/ max\(referenceExtinction, float3\(1\.0e-5.*?float3 lostEnergy = clamp\(1\.0 - segmentTransmittance, 0\.0, 1\.0\);.*?sliceScatteredEnergy = sliceLostEnergy \* scatteringFraction;' -Message 'Water Fog scattering is not role-separated from direct extinction while remaining bounded by effective transparency loss.'
 Require-Match -Text $waterVolume -Pattern '(?s)float3 normalizedLight = clamp\(max\(lightRadiance, 0\.0\) / 21\.0, 0\.0, 4\.0\);.*?normalizedLight.*?clamp\(shadow\.transmittance' -Message 'Directional water scattering does not preserve the actual sun/moon light spectrum and intensity.'
 Require-Match -Text $integrateWaterSingleScatterCode -Pattern 'float3 result = lostEnergy \* scatteringFraction \* palette \* \(0\.080 \* daylight\);' -Message 'Water ambient scattering is not calibrated to 0.080 at 100% strength.'
 Require-Match -Text $integrateWaterSingleScatterCode -Pattern 'float3 directionalLight = normalizedLight \* \(0\.125 \* phaseBoost\);' -Message 'Water directional scattering is not calibrated to 0.125 at 100% strength.'
@@ -785,20 +735,24 @@ Require-NoMatch -Text $trace -Pattern 'waterSegmentLightVisibility(Sample)?\(' -
 Require-Match -Text $config -Pattern 'WATER_FOG\s*=\s*\r?\n?\s*bool\("caustica\.rt\.waterFog", "composite\.water-fog", true\);' -Message 'Water Fog is not a persisted default-on runtime setting.'
 Require-Match -Text $config -Pattern 'WATER_FOG_STRENGTH\s*=\s*\r?\n?\s*clampedFloat\("caustica\.rt\.waterFogStrength", "composite\.water-fog-strength", 1\.0f, 0\.0f, 2\.0f\);' -Message 'Water Fog Strength is not persisted and clamped to 0-200 percent.'
 Require-Match -Text $config -Pattern 'WATER_WAVE_STRENGTH\s*=\s*\r?\n?\s*clampedFloat\("caustica\.rt\.waterWaveStrength", "composite\.water-wave-strength", 1\.0f, 0\.0f, 2\.0f\);' -Message 'Water Wave Strength is not persisted and clamped to 0-200 percent.'
+Require-Match -Text $config -Pattern 'WATER_TRANSPARENCY\s*=\s*\r?\n?\s*clampedFloat\("caustica\.rt\.waterTransparency", "composite\.water-transparency", 1\.0f, 0\.0f, 2\.0f\);' -Message 'Water Transparency is not persisted with default 100 percent and clamp 0-200 percent.'
 Require-Match -Text $videoOptions -Pattern '(?s)waterWaves\(\),\s*waterWaveStrength\(\),\s*waterFog\(\),' -Message 'Water Fog is not exposed beside Animated Water and Water Wave Strength in Video Settings.'
 Require-Match -Text $videoOptions -Pattern '(?s)waterWaves\(\),\s*waterWaveStrength\(\),\s*waterFog\(\),\s*waterFogStrength\(\),' -Message 'Water Wave Strength is not ordered beside Animated Water and Water Fog controls in Video Settings.'
 Require-Match -Text $videoOptions -Pattern '(?s)waterFog\(\),\s*waterFogStrength\(\),' -Message 'Water Fog Strength is not exposed beside the Water Fog toggle.'
+Require-Match -Text $videoOptions -Pattern '(?s)waterFog\(\),\s*waterFogStrength\(\),\s*waterTransparency\(\),' -Message 'Water Transparency is not immediately after Water Fog Strength.'
 Require-Match -Text $videoOptions -Pattern '(?s)private static OptionInstance<Integer> waterFogStrength\(\).*?new OptionInstance\.IntRange\(0, 200\).*?setting\.set\(percent / 100\.0f\)' -Message 'Water Fog Strength is not a live 0-200 percent slider.'
 Require-Match -Text $videoOptions -Pattern '(?s)private static OptionInstance<Integer> waterWaveStrength\(\).*?new OptionInstance\.IntRange\(0, 200\).*?setting\.set\(percent / 100\.0f\)' -Message 'Water Wave Strength is not a live 0-200 percent slider.'
+Require-Match -Text $videoOptions -Pattern '(?s)private static OptionInstance<Integer> waterTransparency\(\).*?CausticaConfig\.Rt\.Composite\.WATER_TRANSPARENCY;.*?new OptionInstance\.IntRange\(0, 200\).*?setting\.set\(percent / 100\.0f\)' -Message 'Water Transparency is not a live 0-200 percent slider.'
 Require-Match -Text $composite -Pattern '(?s)private static boolean waterFog\(\).*?WATER_FOG\.value\(\);' -Message 'The renderer does not re-read the Water Fog setting at runtime.'
 Require-Match -Text $composite -Pattern '(?s)private static float waterWaveStrength\(\).*?WATER_WAVE_STRENGTH\.value\(\);' -Message 'The renderer does not re-read Water Wave Strength at runtime.'
+Require-Match -Text $composite -Pattern '(?s)private static float waterTransparency\(\).*?WATER_TRANSPARENCY\.value\(\);' -Message 'The renderer does not re-read Water Transparency at runtime.'
 Require-Match -Text $composite -Pattern 'flags \|= 0b100000;\s*// W2: water-medium fog and Tyndall scattering' -Message 'Water Fog is not published through its dedicated world flag.'
 Require-Match -Text $composite -Pattern 'new Float4\(terrain\.blockX & WATER_ANCHOR_MASK,\s*terrain\.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, waterFogStrength\(\)\)' -Message 'Water Fog Strength is not published every frame through waterAnchor.w.'
-Require-Match -Text $composite -Pattern 'new Float4\(waterWaveStrength\(\), 0\.0f, 0\.0f, 0\.0f\)' -Message 'Water Wave Strength is not published every frame through waterTuning.x.'
+Require-Match -Text $composite -Pattern 'new Float4\(waterWaveStrength\(\), waterTransparency\(\), 0\.0f, 0\.0f\)' -Message 'Water Wave Strength and Water Transparency are not published every frame through waterTuning.x/y.'
 Require-Match -Text $worldCommon -Pattern 'bit0 submerged, bit4 waves, bit5 water fog' -Message 'The WorldPush flag contract does not reserve bit 5 for water fog.'
-Require-Match -Text $worldCommon -Pattern 'public float4\s+waterTuning;\s*// x wave strength 0\.\.2, yzw reserved' -Message 'WorldPush waterTuning does not declare the reserved wave-strength lane.'
+Require-Match -Text $worldCommon -Pattern 'public float4\s+waterTuning;\s*// x wave strength 0\.\.2, y transparency 0\.\.2, zw reserved' -Message 'WorldPush waterTuning does not document wave strength and transparency lanes.'
 Require-Match -Text $worldCommon -Pattern '(?s)public float4\s+waterAnchor;.*?public float4\s+waterTuning;.*?public float4x4\s+curViewProj;' -Message 'WorldPush waterTuning is not positioned between waterAnchor and curViewProj.'
-Require-Match -Text $composite -Pattern '(?s)waterAnchor,\s*new Float4\(waterWaveStrength\(\), 0\.0f, 0\.0f, 0\.0f\),\s*mvCurProjView,' -Message 'RtComposite does not serialize waterTuning in the WorldPush ABI order.'
+Require-Match -Text $composite -Pattern '(?s)waterAnchor,\s*new Float4\(waterWaveStrength\(\), waterTransparency\(\), 0\.0f, 0\.0f\),\s*mvCurProjView,' -Message 'RtComposite does not serialize waterTuning transparency in the WorldPush ABI order.'
 Require-Match -Text $generatedWorldPush -Pattern '(?m)^\s*public static final int BYTE_SIZE = 672;\s*$' -Message 'Generated WorldPushData BYTE_SIZE is not 672.'
 Require-Match -Text $generatedWorldPush -Pattern '(?m)^\s*dst\.putFloat\(384, waterTuning\(\)\.x\(\)\);\s*$' -Message 'Generated waterTuning.x is not stored at byte 384.'
 Require-Match -Text $generatedWorldPush -Pattern '(?m)^\s*dst\.putFloat\(384 \+ 4, waterTuning\(\)\.y\(\)\);\s*$' -Message 'Generated waterTuning.y is not stored at byte 388.'
@@ -816,21 +770,25 @@ foreach ($functionName in $expectedExecutableCalls.Keys) {
 Require-Match -Text $secondary -Pattern 'bool waterFog = \(worldPush\.flags & 32u\) != 0u;' -Message 'Pass B does not read the dedicated Water Fog flag.'
 Require-Match -Text $secondary -Pattern '(?s)float3 rawLightDirForWater = worldPush\.lightDir\.xyz;.*?float lightDirLengthSq = dot\(rawLightDirForWater, rawLightDirForWater\);.*?float3 lightDirForWater = rawLightDirForWater \* rsqrt\(max\(lightDirLengthSq, 1\.0e-8\)\);' -Message 'Water Tyndall light direction is not normalized safely for a zero-light frame.'
 Require-NoMatch -Text $secondary -Pattern 'float3 lightDirForWater = normalize\(worldPush\.lightDir\.xyz\)' -Message 'Water Tyndall still uses undefined zero-vector normalization.'
-Require-Match -Text $secondary -Pattern '(?s)import water_volume;.*?float3 effectiveExtinction = waterEffectiveExtinction\(.*?\);.*?L \+= throughput \* integrateWaterSingleScatter\(\s*ro, rd, segmentDistance, effectiveExtinction, segmentTransmittance,.*?waterFogStrength, seed\);.*?throughput \*= segmentTransmittance;' -Message 'Pass B does not integrate continuous water scattering before its matching Beer attenuation.'
+Require-Match -Text $secondary -Pattern '(?s)import water_volume;.*?float3 effectiveExtinction = waterEffectiveExtinction\(.*?\);.*?L \+= throughput \* integrateWaterSingleScatter\(\s*ro, rd, segmentDistance, medium\.current\.extinction, effectiveExtinction, segmentTransmittance,.*?waterFogStrength, seed\);.*?throughput \*= segmentTransmittance;' -Message 'Pass B does not integrate role-separated water scattering before its matching transparency-effective Beer attenuation.'
 Require-Match -Text $secondary -Pattern '(?s)integrateWaterSingleScatter\(.*?waterFogStrength, seed\)' -Message 'Pass B does not provide a per-path seed for water-volume decorrelation.'
 # Pass A consumes the camera-to-first-dielectric segment. Its water scattering is written once as a
 # per-pixel prefix; Pass B reads that prefix before averaging the split continuations, avoiding omission
 # for a submerged camera and avoiding double-counting across reflection/refraction branches.
 Require-Match -Text $primary -Pattern '(?s)public PathSegment tracePrimary\(.*?out float3 prefixRadiance\).*?prefixRadiance = float3\(0\.0, 0\.0, 0\.0\);' -Message 'Pass A does not expose a single per-pixel prefix-radiance accumulator.'
-Require-Match -Text $primary -Pattern '(?s)import water_volume;.*?float3 effectiveExtinction = waterEffectiveExtinction\(.*?\);.*?prefixRadiance \+= throughput \* integrateWaterSingleScatter\(\s*ro, rd, payload\.hitT, effectiveExtinction, segmentTransmittance,.*?waterFogStrength, seed\);.*?throughput \*= segmentTransmittance;' -Message 'Pass A does not add continuous water scattering before absorbing its consumed camera segment.'
+Require-Match -Text $primary -Pattern '(?s)import water_volume;.*?float3 effectiveExtinction = waterEffectiveExtinction\(.*?\);.*?prefixRadiance \+= throughput \* integrateWaterSingleScatter\(\s*ro, rd, payload\.hitT, medium\.current\.extinction, effectiveExtinction, segmentTransmittance,.*?waterFogStrength, seed\);.*?throughput \*= segmentTransmittance;' -Message 'Pass A does not add role-separated water scattering before absorbing its transparency-effective camera segment.'
 Require-Match -Text $primary -Pattern '(?s)integrateWaterSingleScatter\(.*?waterFogStrength, seed\)' -Message 'Pass A does not provide a per-pixel path seed for water-volume decorrelation.'
 Require-Match -Text $primary -Pattern '(?s)float3 prefixRadiance;\s*PathSegment terminal = tracePrimary\(\s*current, queue, splitRecord, pixelIndex, nextRecord, prefixRadiance\);\s*outImage\[pix\] = float4\(prefixRadiance, 1\.0\);' -Message 'Pass A does not publish the consumed-segment radiance exactly once for Pass B.'
 Require-Match -Text $secondary -Pattern 'float3 prefixRadiance = outImage\[pix\]\.xyz;' -Message 'Pass B does not recover Pass A consumed-segment radiance.'
 Require-Match -Text $secondary -Pattern 'outImage\[pix\] = float4\(prefixRadiance \+ frameRadiance / float\(spp\), 1\.0\);' -Message 'Pass B does not add the Pass A prefix after averaging its continuation samples.'
 Require-Match -Text $guides -Pattern 'import water_volume;' -Message 'Transmission guides do not share the effective water extinction implementation.'
 Require-NoMatch -Text $guides -Pattern 'integrateWaterSingleScatter\(' -Message 'Transmission guides must remain radiance-free and contain absorption only.'
-Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "Controls underwater turbidity, deep-water visibility, emerald/cyan haze, and Tyndall shafts. Clear-water absorption stays fixed."')) -Message 'English Water Fog Strength tooltip does not describe scattering extinction control.'
-Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "控制水下浑浊度、深水能见度、翠绿/青蓝雾气和丁达尔光束；清水基础吸收保持不变。"')) -Message 'Chinese Water Fog Strength tooltip does not describe scattering extinction control.'
+Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "Controls underwater emerald/cyan haze and Tyndall shafts without changing direct water visibility."')) -Message 'English Water Fog Strength tooltip does not state its scattering-only role.'
+Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterFogStrength.tooltip": "控制水下翠绿/青蓝雾气和丁达尔光束，不改变水体直达能见度。"')) -Message 'Chinese Water Fog Strength tooltip does not state its scattering-only role.'
+Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterTransparency": "Water Transparency"')) -Message 'English Water Transparency name is missing.'
+Require-Match -Text $english -Pattern ([regex]::Escape('"caustica.options.rt.waterTransparency.tooltip": "Controls direct underwater visibility. 0% is most opaque, 100% is the recommended balance, and 200% is clearest."')) -Message 'English Water Transparency tooltip is missing or inaccurate.'
+Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterTransparency": "水体透明度"')) -Message 'Chinese Water Transparency name is missing.'
+Require-Match -Text $chinese -Pattern ([regex]::Escape('"caustica.options.rt.waterTransparency.tooltip": "控制水下直达能见度：0% 最不透明，100% 为推荐平衡，200% 最清澈。"')) -Message 'Chinese Water Transparency tooltip is missing or inaccurate.'
 Require-Match -Text $english -Pattern '"caustica\.options\.rt\.waterWaveStrength": "Water Wave Strength"' -Message 'English Water Wave Strength name is missing.'
 Require-Match -Text $english -Pattern '"caustica\.options\.rt\.waterWaveStrength\.tooltip"' -Message 'English Water Wave Strength tooltip is missing.'
 Require-Match -Text $chinese -Pattern '"caustica\.options\.rt\.waterWaveStrength": "水波幅度"' -Message 'Chinese Water Wave Strength name is missing.'

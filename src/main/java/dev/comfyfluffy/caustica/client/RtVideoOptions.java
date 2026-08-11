@@ -43,6 +43,7 @@ public final class RtVideoOptions {
             waterWaveStrength(),
             waterFog(),
             waterFogStrength(),
+            waterTransparency(),
             airFog(),
             airFogStrength(),
             volumetricLight(),
@@ -150,6 +151,17 @@ public final class RtVideoOptions {
         return new OptionInstance<>(
             "caustica.options.rt.waterFogStrength",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.waterFogStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Integer> waterTransparency() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.WATER_TRANSPARENCY;
+        return new OptionInstance<>(
+            "caustica.options.rt.waterTransparency",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.waterTransparency.tooltip")),
             (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
             new OptionInstance.IntRange(0, 200),
             Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),

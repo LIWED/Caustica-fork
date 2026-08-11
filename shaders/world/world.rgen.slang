@@ -100,14 +100,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVo
         airVolumeConsumed = false;
         if (any(medium.current.extinction > 0.0)) {
             float3 effectiveExtinction = waterEffectiveExtinction(
-                    medium.current.extinction, medium.current.water, waterFog, waterFogStrength);
+                    medium.current.extinction, medium.current.water, worldPush.waterTuning.y);
             float3 segmentTransmittance = exp(-effectiveExtinction * segmentDistance);
             if (medium.current.water && waterFog && waterFogStrength > 0.0) {
                 float3 rawLightDirForWater = worldPush.lightDir.xyz;
                 float lightDirLengthSq = dot(rawLightDirForWater, rawLightDirForWater);
                 float3 lightDirForWater = rawLightDirForWater * rsqrt(max(lightDirLengthSq, 1.0e-8));
                 L += throughput * integrateWaterSingleScatter(
-                        ro, rd, segmentDistance, effectiveExtinction, segmentTransmittance,
+                        ro, rd, segmentDistance, medium.current.extinction, effectiveExtinction, segmentTransmittance,
                         worldPush.lightRadiance.xyz, lightDirForWater, waterFogStrength, seed);
             }
             throughput *= segmentTransmittance;

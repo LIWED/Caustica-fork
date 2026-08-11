@@ -543,6 +543,8 @@ public final class CausticaConfig {
                     bool("caustica.rt.waterFog", "composite.water-fog", true);
             public static final FloatSetting WATER_FOG_STRENGTH =
                     clampedFloat("caustica.rt.waterFogStrength", "composite.water-fog-strength", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting WATER_TRANSPARENCY =
+                    clampedFloat("caustica.rt.waterTransparency", "composite.water-transparency", 1.0f, 0.0f, 2.0f);
             public static final BooleanSetting AIR_FOG =
                     bool("caustica.rt.airFog", "composite.air-fog", true);
             public static final FloatSetting AIR_FOG_STRENGTH =
