@@ -306,7 +306,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVo
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
             VisibilityResult shadow = visibility(p, lightDir, 10000.0);
-            float3 vis = shadow.transmittance;
+            float3 vis = shadow.transmittance * payloadParallaxShadow();
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).

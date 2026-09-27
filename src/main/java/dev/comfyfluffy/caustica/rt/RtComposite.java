@@ -55,6 +55,7 @@ import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtEmissionSemantics;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
+import dev.comfyfluffy.caustica.rt.material.RtParallax;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -316,6 +317,7 @@ public final class RtComposite {
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
     private long atlasSampler;
+    private long materialPageSampler;
     private boolean failed;
     private boolean loggedActive;
 
@@ -631,7 +633,7 @@ public final class RtComposite {
         RtBlockMaterials.INSTANCE.prepareAll(ctx, bindlessTextureCapacity, emissionSemantics, materialOverrides);
         RtEntityTextures.INSTANCE.reset(bindlessTextureCapacity);
         worldPipeline.setEntityAlbedoTexture(0, atlasView, sampler);
-        RtBlockMaterials.INSTANCE.bindPages(worldPipeline, sampler);
+        RtBlockMaterials.INSTANCE.bindPages(worldPipeline, materialPageSampler(ctx));
         RtMaterialRegistry.INSTANCE.rebuild(ctx, RtBlockMaterials.INSTANCE, materialOverrides);
         materialBindingsReady = true;
         // Sky rewrite: bind the vanilla celestials atlas (sun + moon phases) for world.rmiss. The view
@@ -899,6 +901,8 @@ public final class RtComposite {
             if (volumetricLight()) {
                 flags |= 1 << 7;
             }
+            flags |= RtParallax.flags(CausticaConfig.Rt.Composite.PARALLAX.value(),
+                    CausticaConfig.Rt.Composite.PARALLAX_DEPTH.value());
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
@@ -1489,6 +1493,13 @@ public final class RtComposite {
             }
             atlasSampler = 0L;
         }
+        if (materialPageSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), materialPageSampler, null);
+            }
+            materialPageSampler = 0L;
+        }
     }
 
     private long atlasSampler(RtContext ctx) {
@@ -1510,6 +1521,28 @@ public final class RtComposite {
             }
         }
         return atlasSampler;
+    }
+
+    private long materialPageSampler(RtContext ctx) {
+        if (materialPageSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_LINEAR)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .minLod(0f).maxLod(16f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(material pages) failed");
+                }
+                materialPageSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, materialPageSampler,
+                        "material page sampler");
+            }
+        }
+        return materialPageSampler;
     }
 
     private static long blockAlbedoAtlasView() {

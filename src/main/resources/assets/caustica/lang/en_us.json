@@ -27,6 +27,10 @@
 	"caustica.options.rt.glow": "Entity Glow Outline",
 	"caustica.options.rt.glow.tooltip": "Draw the vanilla Glowing-effect outline (through walls) around glowing entities.",
 
+	"caustica.options.rt.parallax": "Parallax Occlusion Mapping",
+	"caustica.options.rt.parallax.tooltip": "Adds surface depth to solid blocks using resource-pack height maps. Requires LabPBR normal textures with height in alpha. Does not change block outlines; fades at distance and grazing angles.",
+	"caustica.options.rt.parallaxDepth": "Parallax Depth",
+	"caustica.options.rt.parallaxDepth.tooltip": "Controls height-map depth. 0% disables displacement; 100% uses the resource-pack depth; 200% doubles it. Only affects solid opaque terrain.",
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 	"caustica.options.rt.waterWaveStrength": "Water Wave Strength",

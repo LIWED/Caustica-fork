@@ -27,6 +27,10 @@
 	"caustica.options.rt.glow": "实体发光轮廓",
 	"caustica.options.rt.glow.tooltip": "为发光实体绘制原版发光效果轮廓（可穿墙显示）。",
 
+	"caustica.options.rt.parallax": "视差遮蔽映射",
+	"caustica.options.rt.parallax.tooltip": "使用资源包高度图为实体方块表面增加凹凸深度。需要带高度通道的 LabPBR 法线纹理；不改变方块轮廓，远处和掠射角逐渐减弱。",
+	"caustica.options.rt.parallaxDepth": "视差深度",
+	"caustica.options.rt.parallaxDepth.tooltip": "控制高度图深度。0% 关闭偏移；100% 使用资源包深度；200% 加倍。仅作用于不透明实体地形。",
 	"caustica.options.rt.waterWaves": "动态水面",
 	"caustica.options.rt.waterWaves.tooltip": "对水面法线进行动画处理，以显示移动波浪高光。",
 	"caustica.options.rt.waterWaveStrength": "水波幅度",

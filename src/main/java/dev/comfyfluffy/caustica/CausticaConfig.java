@@ -531,6 +531,10 @@ public final class CausticaConfig {
         }
 
         public static final class Composite {
+            public static final BooleanSetting PARALLAX =
+                    bool("caustica.rt.parallax", "composite.parallax", true);
+            public static final FloatSetting PARALLAX_DEPTH =
+                    clampedFloat("caustica.rt.parallaxDepth", "composite.parallax-depth", 1.0f, 0.0f, 2.0f);
             public static final IntSetting DEBUG_VIEW = intValue("caustica.rt.debugView", "composite.debug-view", 0);
             public static final IntSetting SPP = intAtLeast("caustica.rt.spp", "composite.spp", 1, 1);
             public static final IntSetting MAX_BOUNCES =

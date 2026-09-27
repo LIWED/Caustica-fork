@@ -49,6 +49,34 @@ final class RtMaterialTextureDataTest {
         assertEquals(0.25f, reduced.surface0()[6], EPS);
     }
 
+    @Test
+    void preservesLinearHeightSeparatelyFromNormalAndAo() {
+        float[] normalAo = repeatedNormal(4, 0.5f, 0.5f, 0.8f, 0.0f);
+        normalAo[7] = 0.2f;
+        normalAo[11] = 0.6f;
+        normalAo[15] = 1.0f;
+        RtMaterialTextureData.Level reduced = RtMaterialTextureData.reduce(level(
+                repeatedNormal(4, 0.4f, 0, 0, 0), normalAo,
+                repeatedNormal(4, 0.04f, 0.04f, 0.04f, 0)));
+        assertEquals(0.45f, reduced.normalAo()[3], EPS);
+        assertEquals(0.8f, reduced.normalAo()[2], EPS);
+        assertEquals(0.5f, reduced.normalAo()[0], EPS);
+        assertEquals(0.4f, reduced.surface0()[0], EPS);
+    }
+
+    @Test
+    void whiteHeightRemainsUndisplacedThroughoutMipChain() {
+        var levels = RtMaterialTextureData.mipChain(level(
+                repeatedNormal(4, 0.4f, 0, 0, 0),
+                repeatedNormal(4, 0.5f, 0.5f, 1, 1),
+                repeatedNormal(4, 0.04f, 0.04f, 0.04f, 0)), 4);
+        for (var mip : levels) {
+            for (int i = 3; i < mip.normalAo().length; i += 4) {
+                assertEquals(1.0f, mip.normalAo()[i], 0.0f);
+            }
+        }
+    }
+
     private static RtMaterialTextureData.Level level(float[] surface0, float[] normalAo, float[] surface1) {
         return new RtMaterialTextureData.Level(2, 2, surface0, normalAo, surface1);
     }

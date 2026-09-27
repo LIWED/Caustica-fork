@@ -39,6 +39,8 @@ public final class RtVideoOptions {
             sunSize(),
             entities(),
             particles(),
+            parallax(),
+            parallaxDepth(),
             waterWaves(),
             waterWaveStrength(),
             waterFog(),
@@ -125,6 +127,21 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> particles() {
         return bool("caustica.options.rt.particles", CausticaConfig.Rt.Entities.PARTICLES_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> parallax() {
+        return bool("caustica.options.rt.parallax", CausticaConfig.Rt.Composite.PARALLAX);
+    }
+
+    private static OptionInstance<Integer> parallaxDepth() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.PARALLAX_DEPTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.parallaxDepth",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.parallaxDepth.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
     }
 
     private static OptionInstance<Boolean> waterWaves() {

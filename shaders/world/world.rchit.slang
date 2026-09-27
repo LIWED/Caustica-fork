@@ -5,9 +5,10 @@
 // tableAddr/entityTableAddr are read from the inline push-constant lanes (pc), not through the
 // WorldPush BDA struct: they're read on every single hit (the hottest chain in the frame), and going
 // through worldPushAddr first would cost an extra global-memory load just to find the address of the
-// load we actually want. The cold WorldPush struct is dereferenced only for the breaking overlay.
+// load we actually want. The cold WorldPush struct is dereferenced for breaking and eligible POM.
 import world_common;
 import math;
+import parallax;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
@@ -20,7 +21,8 @@ import math;
 
 void payloadSetPacked(inout Payload payload, uint material, float roughness, float metalness,
         float emission, float sss, float ior, float transmission, uint emissionSource) {
-    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT);
+    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT)
+            | (255u << PAYLOAD_PARALLAX_SHADOW_SHIFT);
     payload.roughMetal = packHalf2(float2(roughness, metalness));
     payload.emissionSss = packHalf2(float2(emission, sss));
     payload.iorTransmission = packHalf2(float2(ior, transmission));
@@ -128,6 +130,66 @@ float4 samplePageSurface1(uint page, float2 uv, float lod) {
 }
 float4 samplePageNormalAo(uint page, float2 uv, float lod) {
     return materialNormalAoTex[NonUniformResourceIndex(page)].SampleLevel(uv, lod);
+}
+
+struct MaterialHeight : IParallaxHeight {
+    uint page;
+    float4 rect;
+    float2 inset;
+    float lod;
+    float height(float2 uv) {
+        float2 local = parallaxWrapUv(uv, inset);
+        return samplePageNormalAo(page, rect.xy + local * rect.zw, lod).a;
+    }
+};
+
+float2 materialParallaxUv(MaterialHeader header, float2 atlasUv, float lod,
+        float3 n, float3 p0, float3 p1, float3 p2,
+        float2 uv0, float2 uv1, float2 uv2, float3 view,
+        out float directShadow, out float cavityOcclusion, out float3 reliefNormal) {
+    directShadow = 1.0;
+    cavityOcclusion = 1.0;
+    reliefNormal = n;
+    if ((header.features & MATERIAL_FEATURE_NORMAL) == 0u) return atlasUv;
+    uint flags = ConstPtr<WorldPush>(pc.worldPushAddr)[0].flags;
+    if ((flags & PARALLAX_ENABLED) == 0u) return atlasUv;
+    if (any(header.albedoUv.zw <= float2(0.0))) return atlasUv;
+
+    float strength = float((flags >> PARALLAX_DEPTH_SHIFT) & 255u) * 0.01;
+    float2 uvScale = header.albedoUv.zw;
+    float2 local = (atlasUv - header.albedoUv.xy) * uvScale;
+    float depth = parallaxDepth(strength, lod, dot(n, view));
+    float2 ray = parallaxProjectedRay(p0, p1, p2, float2(0.0),
+            (uv1 - uv0) * uvScale, (uv2 - uv0) * uvScale, n, view, depth);
+    if (dot(ray, ray) <= 1.0e-12) return atlasUv;
+
+    MaterialHeight field;
+    field.page = header.texturePage;
+    field.rect = header.materialUv;
+    float maxLod = float((header.features >> MATERIAL_MAX_LOD_SHIFT) & MATERIAL_MAX_LOD_MASK);
+    field.lod = min(lod, maxLod);
+    float2 materialSize = texSizePx(materialNormalAoTex[NonUniformResourceIndex(field.page)]) * field.rect.zw;
+    float2 heightResolution = max(materialSize / exp2(field.lod), float2(1.0));
+    float2 albedoSize = texSizePx(blockAlbedoAtlas) / uvScale;
+    field.inset = max(parallaxFootprintInset(materialSize, field.lod),
+            parallaxFootprintInset(albedoSize, lod));
+    uint steps = parallaxStepCount(ray, heightResolution,
+            uint(lerp(32.0, 8.0, saturate(dot(n, view)))));
+    float2 displaced = parallaxTrace(field, local, ray, steps);
+    if (all(displaced == local)) return atlasUv;
+    reliefNormal = parallaxReliefNormal(field, displaced, 1.0 / heightResolution,
+            p0, p1, p2, float2(0.0), (uv1 - uv0) * uvScale,
+            (uv2 - uv0) * uvScale, n, depth);
+    float hitDepth = saturate(dot(displaced - local, ray) / dot(ray, ray));
+    cavityOcclusion = 1.0 - 0.35 * smoothstep(0.25, 0.9, hitDepth);
+    float3 lightDir = normalize(ConstPtr<WorldPush>(pc.worldPushAddr)[0].lightDir.xyz);
+    float cameraFade = (1.0 - smoothstep(1.0, 4.0, lod))
+            * smoothstep(0.05, 0.15, dot(n, view));
+    float2 lightRay = parallaxProjectedRay(p0, p1, p2, float2(0.0),
+            (uv1 - uv0) * uvScale, (uv2 - uv0) * uvScale, n, lightDir,
+            0.25 * clamp(strength, 0.0, 2.0) * cameraFade);
+    directShadow = parallaxSelfShadow(field, displaced, hitDepth, lightRay, 16u);
+    return header.albedoUv.xy + parallaxWrapUv(displaced, field.inset) / uvScale;
 }
 
 // The sole terrain/entity material evaluation path. LabPBR categorical bytes have already been
@@ -396,6 +458,17 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         return;
     }
 
+    // Keep cutout alpha tests, transparent interfaces and animated fluids on their geometric UVs.
+    // POM changes one shared coordinate before albedo AND the canonical material pages are sampled.
+    float parallaxShadow = 1.0;
+    float parallaxCavity = 1.0;
+    float3 parallaxNormal = n;
+    if (materialHeader.model == MATERIAL_OPAQUE && pr.normal.w < 1.5) {
+        uv = materialParallaxUv(materialHeader, uv, blockLod, n,
+                tp0, tp1, tp2, uv0, uv1, uv2, vdir,
+                parallaxShadow, parallaxCavity, parallaxNormal);
+    }
+
     // Water (tint.w == 1) carries the pure biome water tint (no grey water-texture multiply): raygen
     // shades the surface as a clear dielectric and only needs the tint to derive the per-channel
     // Beer–Lambert absorption. Opaque terrain uses textured albedo.
@@ -413,8 +486,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     Surface surface = evaluateMaterial(materialHeader, uv, blockLod, float3(payload.albedo), n,
             tp0, tp1, tp2, uv0, uv1, uv2, vdir,
             materialHeader.params.x, materialHeader.params.y, emission, nonSolid);
-    n = surface.normal;
-    payload.albedo *= half(surface.ao);
+    float wallWeight = smoothstep(0.1, 0.5, 1.0 - saturate(dot(n, parallaxNormal)));
+    n = normalize(lerp(surface.normal, parallaxNormal, wallWeight));
+    float wallNoV = dot(n, vdir);
+    if (wallNoV < 0.02) n = normalize(n + vdir * (0.02 - wallNoV));
+    payload.albedo *= half(surface.ao * parallaxCavity);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
     // it after normal mapping so decal projection uses the same shading orientation as the old path.
     if (material != MATERIAL_WATER) {
@@ -425,6 +501,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     payloadSetPacked(payload, material, surface.roughness, surface.metalness,
             surface.emission, surface.sss, materialHeader.params.z, materialHeader.params.w,
             materialEmissionSource(materialHeader, surface.emission));
+    payload.flags = (payload.flags & ~(255u << PAYLOAD_PARALLAX_SHADOW_SHIFT))
+            | (uint(round(saturate(parallaxShadow) * 255.0)) << PAYLOAD_PARALLAX_SHADOW_SHIFT);
     payloadSetDielectric(payload, material, entering);
     // RIS emitter-NEE membership: raygen gates this emitter's direct-hit emission term (RIS covers it).
     if ((pr.flags & TERRAIN_PRIM_IN_LIGHT_BUFFER) != 0u) {
