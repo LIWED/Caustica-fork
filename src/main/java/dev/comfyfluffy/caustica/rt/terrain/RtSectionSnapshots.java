@@ -189,6 +189,11 @@ final class RtSectionSnapshots {
             return level.getBiomeFabric(pos);
         }
 
+        boolean rainsAt(BlockPos pos) {
+            return level.getBiome(pos).value().getPrecipitationAt(pos, level.getSeaLevel())
+                    == Biome.Precipitation.RAIN && level.canSeeSky(pos.above());
+        }
+
         @Override
         public int getMinY() {
             return level.getMinY();

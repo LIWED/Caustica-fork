@@ -249,8 +249,10 @@ final class RtLightCollector {
                     packHalf2(uvHvU, uvHvV),
                     leR, leG, leB, packHalf2(uvCu, uvCv));
 
-            p[pb + PRIM_FLAGS_LANE] = Float.intBitsToFloat(PRIM_FLAG_IN_LIGHT_BUFFER);
-            p[pb + PRIM_FLOATS + PRIM_FLAGS_LANE] = Float.intBitsToFloat(PRIM_FLAG_IN_LIGHT_BUFFER);
+            p[pb + PRIM_FLAGS_LANE] = Float.intBitsToFloat(
+                    Float.floatToRawIntBits(p[pb + PRIM_FLAGS_LANE]) | PRIM_FLAG_IN_LIGHT_BUFFER);
+            p[pb + PRIM_FLOATS + PRIM_FLAGS_LANE] = Float.intBitsToFloat(
+                    Float.floatToRawIntBits(p[pb + PRIM_FLOATS + PRIM_FLAGS_LANE]) | PRIM_FLAG_IN_LIGHT_BUFFER);
         }
     }
 

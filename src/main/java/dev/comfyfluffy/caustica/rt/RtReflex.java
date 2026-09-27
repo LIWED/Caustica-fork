@@ -63,6 +63,10 @@ public final class RtReflex {
     private boolean lastBoost;
     private int lastMinIntervalUs;
     private boolean failed;
+    private long sleepWindowStartNs;
+    private long sleepWindowTotalNs;
+    private long sleepWindowMaxNs;
+    private int sleepWindowCount;
 
     private RtReflex() {
     }
@@ -89,6 +93,11 @@ public final class RtReflex {
     /** The swapchain {@link #applySleepMode} last successfully applied to, or 0 if none (not yet ready). */
     public long appliedSwapchain() {
         return sleepModeSwapchain;
+    }
+
+    /** A replacement swapchain can reuse the old numeric handle; its Reflex mode still needs reapplying. */
+    public void swapchainRecreated() {
+        sleepModeSwapchain = 0L;
     }
 
     /**
@@ -136,6 +145,7 @@ public final class RtReflex {
         if (!enabled() || failed || swapchain == 0L || swapchain != sleepModeSwapchain || timelineSemaphore == 0L) {
             return;
         }
+        long started = System.nanoTime();
         counter++;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkLatencySleepInfoNV sleepInfo = VkLatencySleepInfoNV.calloc(stack).sType$Default()
@@ -157,7 +167,32 @@ public final class RtReflex {
         } catch (Throwable t) {
             failed = true;
             CausticaMod.LOGGER.error("Reflex: sleep failed; Reflex disabled for session", t);
+        } finally {
+            recordSleep(System.nanoTime() - started);
         }
+    }
+
+    private void recordSleep(long elapsedNs) {
+        long now = System.nanoTime();
+        if (sleepWindowStartNs == 0L) {
+            sleepWindowStartNs = now;
+        }
+        sleepWindowTotalNs += elapsedNs;
+        sleepWindowMaxNs = Math.max(sleepWindowMaxNs, elapsedNs);
+        sleepWindowCount++;
+        if (now - sleepWindowStartNs < 1_000_000_000L) {
+            return;
+        }
+        double avgMs = sleepWindowTotalNs / (1_000_000.0 * sleepWindowCount);
+        double maxMs = sleepWindowMaxNs / 1_000_000.0;
+        if (avgMs >= 15.0 || maxMs >= 50.0) {
+            CausticaMod.LOGGER.info("[Reflex pacing] calls={} avgSleepMs={} maxSleepMs={}",
+                    sleepWindowCount, String.format("%.1f", avgMs), String.format("%.1f", maxMs));
+        }
+        sleepWindowStartNs = now;
+        sleepWindowTotalNs = 0L;
+        sleepWindowMaxNs = 0L;
+        sleepWindowCount = 0;
     }
 
     /**
@@ -205,5 +240,9 @@ public final class RtReflex {
         counter = 0L;
         presentCounter = 0L;
         failed = false;
+        sleepWindowStartNs = 0L;
+        sleepWindowTotalNs = 0L;
+        sleepWindowMaxNs = 0L;
+        sleepWindowCount = 0;
     }
 }

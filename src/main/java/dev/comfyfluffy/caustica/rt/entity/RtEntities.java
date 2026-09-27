@@ -11,6 +11,7 @@ import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleGroup;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.particle.SingleQuadParticle;
+import net.minecraft.client.particle.WaterDropParticle;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -95,6 +96,8 @@ public final class RtEntities {
     /** Particles are primary-ray-only: visible/lit by the camera path, invisible to shadows/GI/reflections. */
     public static final int PARTICLE_MASK = MASK_PRIMARY;
     private static final int WEATHER_ALPHA_FLAG = 1 << 30;
+    private static final int WEATHER_RAIN_FLAG = 1 << 29;
+    private static final int RAIN_SPLASH_FLAG = 1 << 28;
     private static final Identifier RAIN_TEXTURE = Identifier.fromNamespaceAndPath(
             "minecraft", "textures/environment/rain.png");
     private static final Identifier SNOW_TEXTURE = Identifier.fromNamespaceAndPath(
@@ -987,6 +990,9 @@ public final class RtEntities {
         frustum.prepare(camPos.x, camPos.y, camPos.z);
         IdentityHashMap<Particle, ParticlePrev> cur = particleCur;
         cur.clear();
+        boolean rainActive = mc.level != null && mc.level.getRainLevel(partial) > 0.02f;
+        int rainSplashMaterialId = rainActive
+                ? RtMaterialRegistry.INSTANCE.entityFallbackId(true) : 0;
         int particlesCaptured = 0;
         try {
             particleGroups:
@@ -1002,6 +1008,12 @@ public final class RtEntities {
                     if (!frustum.isVisible(p.getBoundingBox())) {
                         continue;
                     }
+                    // Vanilla rain impacts use the opaque blue splash sprites. Keep their sprite
+                    // silhouette, but make only rain-time water droplets translucent neutral spray.
+                    boolean rainSplash = rainActive && p instanceof WaterDropParticle;
+                    capture.currentFlags = rainSplash ? WEATHER_ALPHA_FLAG | RAIN_SPLASH_FLAG : 0;
+                    capture.currentAux0 = rainSplash ? 0.30f : 0.0f;
+                    capture.currentMaterialId = rainSplash ? rainSplashMaterialId : 0;
                     int vb = capture.verts.size(), ib = capture.idx.size();
                     int ub = capture.uvList.size(), prb = capture.prim.size(), abb = capture.alphaBuckets.size();
                     int vertBefore = vb / 3;
@@ -1057,13 +1069,14 @@ public final class RtEntities {
         }
         capture.reset(weather.quads().size() * 4);
         capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
-        capture.currentFlags = WEATHER_ALPHA_FLAG;
         capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(true);
         RtWeatherSnapshot.Kind currentKind = null;
         int textureSlot = 0;
         for (RtWeatherSnapshot.Quad quad : weather.quads()) {
             if (quad.kind() != currentKind) {
                 currentKind = quad.kind();
+                capture.currentFlags = WEATHER_ALPHA_FLAG
+                        | (currentKind == RtWeatherSnapshot.Kind.RAIN ? WEATHER_RAIN_FLAG : 0);
                 textureSlot = RtEntityTextures.INSTANCE.slotForTexture(
                         currentKind == RtWeatherSnapshot.Kind.RAIN ? RAIN_TEXTURE : SNOW_TEXTURE);
                 capture.currentTexSlot = textureSlot;

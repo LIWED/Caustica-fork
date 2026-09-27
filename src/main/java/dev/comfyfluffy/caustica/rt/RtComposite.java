@@ -324,6 +324,7 @@ public final class RtComposite {
     // Camera captured each frame from GameRenderer (unjittered level projection + camera rotation + pos).
     private final Matrix4f frameProjection = new Matrix4f();
     private final Matrix4f frameViewRotation = new Matrix4f();
+    private final RtSurfaceWetness surfaceWetness = new RtSurfaceWetness();
     private double camX;
     private double camY;
     private double camZ;
@@ -751,6 +752,10 @@ public final class RtComposite {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
+        // Drop old NGX history before allocating the replacement images. Keeping both live can
+        // push a full-resolution mode change over the GPU memory budget.
+        RtDlssRr.INSTANCE.releaseFeatureAfterIdle();
+        RtDlssFg.INSTANCE.releaseFeatureAfterIdle();
         if (displayImage != null) {
             displayImage.destroy();
         }
@@ -765,6 +770,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        VulkanDiagnostics.logRtMemory(ctx, "old released");
 
         displayW = width;
         displayH = height;
@@ -782,26 +788,29 @@ public final class RtComposite {
         // RT traces into an HDR (R16G16B16A16_SFLOAT) target so radiance > 1 survives to the display
         // mapping seam. displayImage stays R8G8B8A8 to match the main target it is copied into
         // (vkCmdCopyImage requires texel-size-compatible formats).
-        output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
+        output = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
         long pixelRecords = Math.multiplyExact((long) renderW, (long) renderH);
         long continuationBytes = Math.multiplyExact(
                 Math.multiplyExact(pixelRecords, 2L), PATH_RECORD_BYTES);
         continuationQueue = ctx.createBuffer(continuationBytes,
                 VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                 "path continuation queue " + renderW + "x" + renderH + "x2");
-        displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
+        displayImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
-        hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
+        hdrDisplayImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
-        gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
-        gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
-        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide linear depth " + renderW + "x" + renderH);
-        gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
-        gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
-        gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
+        gNormal = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
+        gAlbedo = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
+        gDepth = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide linear depth " + renderW + "x" + renderH);
+        gMotion = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
+        gSpecAlbedo = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
+        gSpecMotion = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
-        rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        rrOutput = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        ctx.initializeStorageImages(output, displayImage, hdrDisplayImage, gNormal, gAlbedo,
+                gDepth, gMotion, gSpecAlbedo, gSpecMotion, rrOutput);
         exposure.ensureResources(ctx);
+        VulkanDiagnostics.logRtMemory(ctx, "new allocated");
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
@@ -974,7 +983,7 @@ public final class RtComposite {
                     airVolume,
                     waterParams,
                     waterAnchor,
-                    new Float4(waterWaveStrength(), waterTransparency(), 0.0f, 0.0f),
+                    new Float4(waterWaveStrength(), waterTransparency(), sky.surfaceWetness(), 0.0f),
                     mvCurProjView,
                     breaking.length,
                     breaking,
@@ -1131,7 +1140,7 @@ public final class RtComposite {
 
     private record SkyPush(Float4 sunDir, Float4 lightDir, Float4 lightRadiance, Float4 moonDir,
                            Float4 celestial, Float4 sunUv, Float4 moonUv, Float4 weather,
-                           Float4 weatherColor) {}
+                           Float4 weatherColor, float surfaceWetness) {}
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
@@ -1149,6 +1158,7 @@ public final class RtComposite {
         var probe = mc.gameRenderer.mainCamera().attributeProbe();
         var level = mc.level;
         float rain = level != null ? level.getRainLevel(partial) : 0.0f;
+        float wetness = surfaceWetness.update(level, level != null ? level.getGameTime() : 0L, rain);
         float thunder = level != null ? level.getThunderLevel(partial) : 0.0f;
         int skyFlashTime = level != null ? ((ClientLevelInvoker) level).caustica$getSkyFlashTime() : 0;
         float lightningFlash = Mth.clamp(skyFlashTime / 2.0f, 0.0f, 1.0f);
@@ -1232,7 +1242,8 @@ public final class RtComposite {
                 uv.sun(),
                 uv.moon(),
                 weather,
-                weatherColor);
+                weatherColor,
+                wetness);
     }
 
     static float cloudDirectTransmittance(float rain, float thunder) {

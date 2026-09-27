@@ -16,6 +16,7 @@ import dev.comfyfluffy.caustica.rt.RtReflex;
 import it.unimi.dsi.fastutil.longs.LongList;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.KHRSwapchain;
+import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkAllocationCallbacks;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPresentIdKHR;
@@ -165,7 +166,11 @@ public abstract class VulkanGpuSurfaceMixin {
 			latency.pNext(pCreateInfo.pNext());
 			latency.latencyModeEnable(true);
 			pCreateInfo.pNext(latency.address());
-			return KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+			int result = KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+			if (result == VK10.VK_SUCCESS) {
+				RtReflex.INSTANCE.swapchainRecreated();
+			}
+			return result;
 		}
 	}
 

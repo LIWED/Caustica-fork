@@ -71,6 +71,10 @@ public final class RtFramePresenter {
     private int generatedFramesInWindow;
     private int interpOkInWindow;
     private int interpFallbackInWindow;
+    private long prepareNsInWindow;
+    private long interpolateNsInWindow;
+    private long acquireNsInWindow;
+    private long presentNsInWindow;
 
     private RtFramePresenter() {
     }
@@ -96,6 +100,7 @@ public final class RtFramePresenter {
     public void prepareExtraFrames(VulkanCommandEncoder enc, VulkanDevice device, long swapchain,
             LongList swapchainImages, long[] presentSemaphores, int swapW, int swapH,
             long backbufferView, long srcImage, int srcW, int srcH, int generatedCount, boolean hdrBackbuffer) {
+        long prepareStart = System.nanoTime();
         pendingCount = 0;
         if (failed || swapchain == 0L || srcImage == 0L || generatedCount <= 0) {
             return;
@@ -106,8 +111,10 @@ public final class RtFramePresenter {
                 // null = no captured RT frame this tick (menu/loading/transition — routine, not a bug): fall
                 // back to duplicating the real frame for just this one frame. A genuine FG failure instead
                 // throws, caught below, which disables FG for the session.
+                long interpolateStart = System.nanoTime();
                 RtImage interp = RtComposite.INSTANCE.fgInterpolate(enc, backbufferView, srcImage,
                         swapW, swapH, i + 1, generatedCount, hdrBackbuffer);
+                interpolateNsInWindow += System.nanoTime() - interpolateStart;
                 if (interp != null) {
                     interpOkInWindow++;
                 } else {
@@ -123,7 +130,9 @@ public final class RtFramePresenter {
                 int imageIndex;
                 try (MemoryStack stack = MemoryStack.stackPush()) {
                     IntBuffer pIndex = stack.callocInt(1);
+                    long acquireStart = System.nanoTime();
                     int r = KHRSwapchain.vkAcquireNextImageKHR(device.vkDevice(), swapchain, ACQUIRE_TIMEOUT_NS, acquireSem, 0L, pIndex);
+                    acquireNsInWindow += System.nanoTime() - acquireStart;
                     if (r != VK10.VK_SUCCESS && r != 1000001003 /* SUBOPTIMAL */) {
                         return; // out-of-date/timeout: present what we have, let MC recover
                     }
@@ -141,6 +150,8 @@ public final class RtFramePresenter {
             failed = true;
             pendingCount = 0;
             CausticaMod.LOGGER.error("DLSS-FG present-record failed; frame generation disabled", t);
+        } finally {
+            prepareNsInWindow += System.nanoTime() - prepareStart;
         }
     }
 
@@ -159,7 +170,9 @@ public final class RtFramePresenter {
                     present.swapchainCount(1);
                     present.pSwapchains(stack.longs(swapchain));
                     present.pImageIndices(stack.ints(pendingImageIndex[i]));
+                    long presentStart = System.nanoTime();
                     KHRSwapchain.vkQueuePresentKHR(presentQueue, present);
+                    presentNsInWindow += System.nanoTime() - presentStart;
                     presentedThisFrame++;
                 }
             } catch (Throwable t) {
@@ -197,15 +210,24 @@ public final class RtFramePresenter {
         double totalFps = (realFramesInWindow + generatedFramesInWindow) / seconds;
         CausticaMod.LOGGER.info(
                 "[FG present-rate] real={} gen={} realFps={} totalPresentFps={} configuredMultiFrameCount={} "
-                        + "interpOk={} interpFallbackDuplicate={}",
+                        + "interpOk={} interpFallbackDuplicate={} avgPrepareMs={} avgInterpolateMs={} "
+                        + "avgAcquireMs={} avgGeneratedPresentMs={}",
                 realFramesInWindow, generatedFramesInWindow,
                 String.format("%.1f", realFps), String.format("%.1f", totalFps),
-                RtDlssFg.INSTANCE.effectiveMultiFrameCount(), interpOkInWindow, interpFallbackInWindow);
+                RtDlssFg.INSTANCE.effectiveMultiFrameCount(), interpOkInWindow, interpFallbackInWindow,
+                String.format("%.1f", prepareNsInWindow / (1_000_000.0 * realFramesInWindow)),
+                String.format("%.1f", interpolateNsInWindow / (1_000_000.0 * realFramesInWindow)),
+                String.format("%.1f", acquireNsInWindow / (1_000_000.0 * realFramesInWindow)),
+                String.format("%.1f", presentNsInWindow / (1_000_000.0 * realFramesInWindow)));
         logWindowStartNs = now;
         realFramesInWindow = 0;
         generatedFramesInWindow = 0;
         interpOkInWindow = 0;
         interpFallbackInWindow = 0;
+        prepareNsInWindow = 0L;
+        interpolateNsInWindow = 0L;
+        acquireNsInWindow = 0L;
+        presentNsInWindow = 0L;
     }
 
     private void recordBlit(VulkanCommandEncoder enc, long srcImage, long dstImage, int copyW, int copyH,

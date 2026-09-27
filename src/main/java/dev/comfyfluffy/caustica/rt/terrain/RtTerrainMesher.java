@@ -438,6 +438,8 @@ final class RtTerrainMesher {
             float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (len > 1.0e-6f) { nx /= len; ny /= len; nz /= len; }
             q.nx = nx; q.ny = ny; q.nz = nz;
+            q.rainBiome = ny > 0.85f && view instanceof RtSectionSnapshots.Region region
+                    && region.rainsAt(pos);
 
             ChunkSectionLayer layer = quad.chunkLayer();
             q.cutout = layer != ChunkSectionLayer.SOLID;
@@ -628,7 +630,7 @@ final class RtTerrainMesher {
                 prim.add(q.tb);
                 prim.add(0f);
                 prim.add(Float.intBitsToFloat(q.materialId)); // TerrainPrim.materialId uint bits
-                prim.add(0f); // flags
+                prim.add(Float.intBitsToFloat(q.rainBiome ? 2 : 0)); // rain-eligible biome, bit 1
                 prim.add(0f); // aux0
                 prim.add(0f); // aux1
                 g.ommSprites.add(q.sprite);
@@ -644,6 +646,7 @@ final class RtTerrainMesher {
         boolean cutout; // non-SOLID render layer (alpha-tested) — also an overlay candidate
         boolean translucent; // TRANSLUCENT layer (stained glass / ice): colored-transmission dielectric
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
+        boolean rainBiome;
         float tr, tg, tb, emission;
         int materialId;
         TextureAtlasSprite sprite;

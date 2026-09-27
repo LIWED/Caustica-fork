@@ -242,6 +242,13 @@ public final class RtDlssFg {
             } else {
                 VK10.vkDeviceWaitIdle(device.vkDevice());
             }
+        }
+        releaseFeatureAfterIdle();
+    }
+
+    /** Called after the RT device is idle, before replacement render images are allocated. */
+    public void releaseFeatureAfterIdle() {
+        if (lib != null && !isNull(feature)) {
             lib.release(feature);
         }
         feature = MemorySegment.NULL;

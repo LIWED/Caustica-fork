@@ -55,12 +55,13 @@ final class RtWeatherCaptureTest {
         assertEquals(RtWeatherSnapshot.Kind.RAIN, mesh.quads().get(0).kind());
         assertEquals(RtWeatherSnapshot.Kind.SNOW, mesh.quads().get(2).kind());
         RtWeatherSnapshot.Vertex rainBottom = mesh.quads().get(0).vertices().getFirst();
-        assertEquals(10.0f, rainBottom.x(), 1.0e-5f);
+        assertEquals(10.15f, rainBottom.x(), 1.0e-5f);
         assertEquals(4.0f, rainBottom.y(), 1.0e-5f);
         assertEquals(20.5f, rainBottom.z(), 1.0e-5f);
         assertEquals(0.25f, rainBottom.u(), 1.0e-5f);
         assertEquals(16.5f, rainBottom.v(), 1.0e-5f); // vanilla vOffset already includes game-time animation
-        assertEquals(0.8f, rainBottom.alpha(), 1.0e-5f);
+        assertEquals(0.336f, rainBottom.alpha(), 1.0e-5f);
+        assertEquals(0.35f, rainBottom.halfWidth(), 1.0e-5f);
         assertEquals(0x00F000A0, rainBottom.lightCoords());
         assertEquals(0.5f, mesh.quads().get(2).vertices().getFirst().halfWidth(), 1.0e-5f);
     }
@@ -79,7 +80,7 @@ final class RtWeatherCaptureTest {
     }
 
     @Test
-    void columnAlphaMatchesVanillaDistanceFadeForRainAndSnow() {
+    void rainIsLighterAndNarrowerWhileSnowKeepsItsDistanceFade() {
         RtWeatherSnapshot snapshot = new RtWeatherSnapshot(
                 List.of(
                         new RtWeatherSnapshot.Column(0, 0, 2, 3, 0f, 0f, 0),
@@ -91,8 +92,8 @@ final class RtWeatherCaptureTest {
 
         RtWeatherSnapshot.Mesh mesh = snapshot.mesh(0, 0, 0, 0.5, 0.5);
 
-        assertEquals(0.6f, mesh.quads().get(0).vertices().getFirst().alpha(), 1.0e-5f);
-        assertEquals(0.3f, mesh.quads().get(2).vertices().getFirst().alpha(), 1.0e-5f);
+        assertEquals(0.252f, mesh.quads().get(0).vertices().getFirst().alpha(), 1.0e-5f);
+        assertEquals(0.096f, mesh.quads().get(2).vertices().getFirst().alpha(), 1.0e-5f);
         assertEquals(0.48f, mesh.quads().get(4).vertices().getFirst().alpha(), 1.0e-5f);
         assertEquals(0.3f, mesh.quads().get(6).vertices().getFirst().alpha(), 1.0e-5f);
     }
@@ -107,6 +108,6 @@ final class RtWeatherCaptureTest {
                 .quads().getFirst().vertices().getFirst().alpha();
 
         assertTrue(Float.isFinite(alpha));
-        assertEquals(0.3f, alpha, 1.0e-5f);
+        assertEquals(0.096f, alpha, 1.0e-5f);
     }
 }

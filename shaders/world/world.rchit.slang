@@ -9,6 +9,7 @@
 import world_common;
 import math;
 import parallax;
+import rain_surface;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
@@ -304,7 +305,13 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (dot(pn, WorldRayDirection()) > 0.0) {
             pn = -pn;
         }
-        payload.albedo = half3(srgbToLinear(entityAlbedoTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb) * pr.tint.rgb);
+        bool rainSplash = (pr.flags & RAIN_SPLASH_FLAG) != 0u;
+        float3 particleColor = rainSplash
+                ? float3(0.50, 0.50, 0.50)
+                : (pr.flags & WEATHER_RAIN_FLAG) != 0u
+                ? float3(0.43, 0.44, 0.45)
+                : srgbToLinear(entityAlbedoTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb);
+        payload.albedo = half3(rainSplash ? particleColor : particleColor * pr.tint.rgb);
         payload.normal = half3(pn);
         payload.hitT = RayTCurrent();
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across
@@ -490,6 +497,28 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     n = normalize(lerp(surface.normal, parallaxNormal, wallWeight));
     float wallNoV = dot(n, vdir);
     if (wallNoV < 0.02) n = normalize(n + vdir * (0.02 - wallNoV));
+    if (material == MATERIAL_OPAQUE && !nonSolid && (pr.flags & TERRAIN_PRIM_RAIN_BIOME) != 0u
+            && pr.normal.y > 0.85 && dot(pr.normal.xyz, vdir) > 0.0
+            && surface.emission < 0.01 && surface.metalness < 0.5) {
+        ConstPtr<WorldPush> weatherPush = ConstPtr<WorldPush>(pc.worldPushAddr);
+        float wet = weatherPush[0].waterTuning.z;
+        float rain = weatherPush[0].weather.x;
+        if (wet > 0.001 || rain > 0.02) {
+            float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+            float puddle = rainPuddle(hitPos, pr.normal.xyz, wet, rain, weatherPush[0].cloudAnchor.xy);
+            float dryRoughness = surface.roughness;
+            // Thin wet film darkens porous ground and smooths its microfacets everywhere, while
+            // deeper patches flatten the normal enough to reflect the environment as water.
+            payload.albedo *= half(1.0 - (0.18 + 0.22 * saturate(dryRoughness)) * wet
+                    - 0.30 * puddle);
+            surface.roughness = lerp(dryRoughness, min(dryRoughness, 0.12), wet);
+            surface.roughness = lerp(surface.roughness, min(surface.roughness, 0.004), puddle);
+            surface.f0 = lerp(surface.f0, float3(0.025, 0.025, 0.025), max(wet, puddle));
+            n = normalize(lerp(n, pr.normal.xyz, puddle * 0.9));
+            n = normalize(n + rainRipple(hitPos.xz + weatherPush[0].cloudAnchor.xy,
+                    weatherPush[0].weather.w, puddle * weatherPush[0].weather.x));
+        }
+    }
     payload.albedo *= half(surface.ao * parallaxCavity);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
     // it after normal mapping so decal projection uses the same shading orientation as the old path.

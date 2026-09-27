@@ -411,6 +411,27 @@ public final class VulkanDiagnostics {
         }
     }
 
+    /** Resize-only VMA snapshot to distinguish live RT allocations from driver/NGX residency. */
+    public static void logRtMemory(RtContext context, String phase) {
+        if (memoryHeapCount <= 0) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VmaBudget.Buffer budgets = VmaBudget.calloc(memoryHeapCount, stack);
+            Vma.vmaGetHeapBudgets(context.vma(), budgets);
+            for (int i = 0; i < memoryHeapCount; i++) {
+                VmaBudget budget = budgets.get(i);
+                CausticaMod.LOGGER.info(
+                        "RT resize memory [{}] heap[{}]: usage={}, budget={}, blockBytes={}, allocationBytes={}",
+                        phase, i, formatBytes(budget.usage()), formatBytes(budget.budget()),
+                        formatBytes(budget.statistics().blockBytes()),
+                        formatBytes(budget.statistics().allocationBytes()));
+            }
+        } catch (Throwable t) {
+            CausticaMod.LOGGER.warn("Failed to collect RT resize memory snapshot [{}]", phase, t);
+        }
+    }
+
     private static void logNvQueueCheckpoints(VkQueue queue, String label) {
         if (queue.getCapabilities().vkGetQueueCheckpointDataNV == 0L) {
             return;

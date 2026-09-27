@@ -350,6 +350,7 @@ void main(inout Payload payload) {
     // Sun & moon discs — sampled from the vanilla celestials atlas, gated to rays that haven't already
     // accounted for the light via diffuse NEE. squareBody gives the body-local [-1,1] coord; the
     // sprite's own texel coverage (alpha) shapes the disc.
+    float3 celestialRadiance = float3(0.0, 0.0, 0.0);
     if (showCelestial) {
         float2 local;
         squareBody(dir, sd, SUN_DISC_HALF_ANGLE, worldPush.celestial.xyz, local);
@@ -361,7 +362,7 @@ void main(inout Payload payload) {
             // survives, the halo collapses to ~0.
             float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
             // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            col += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp * weatherDirect;
+            celestialRadiance += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp * weatherDirect;
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
@@ -373,12 +374,16 @@ void main(inout Payload payload) {
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            col += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp * weatherDirect;
+            celestialRadiance += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp * weatherDirect;
         }
     }
 
     WeatherCloudResult cloud = weatherCloud(worldPush, WorldRayOrigin(), dir, weatherSky);
-    col = col * cloud.transmittance + cloud.radiance;
+    // The HDR discs need a longer optical path through dense cloud than the diffuse sky. A single
+    // transmittance still leaves the sun white after tone mapping when rain clouds cover its direction.
+    float discTransmittance = cloud.transmittance * cloud.transmittance;
+    discTransmittance *= discTransmittance;
+    col = col * cloud.transmittance + cloud.radiance + celestialRadiance * discTransmittance;
 
     // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
     // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not

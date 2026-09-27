@@ -96,7 +96,7 @@ public record RtWeatherSnapshot(List<Column> rainColumns, List<Column> snowColum
         float cz = column.z() + 0.5f - rbz;
         float bottom = column.bottomY() - rby;
         float top = column.topY() - rby;
-        float halfWidth = 0.5f;
+        float halfWidth = kind == Kind.RAIN ? 0.35f : 0.5f;
         float distanceNorm;
         if (radius <= 0) {
             distanceNorm = 1.0f;
@@ -105,8 +105,9 @@ public record RtWeatherSnapshot(List<Column> rainColumns, List<Column> snowColum
             double dz = column.z() + 0.5 - cameraZ;
             distanceNorm = (float) Math.min((dx * dx + dz * dz) / ((double) radius * radius), 1.0);
         }
-        float kindFactor = kind == Kind.RAIN ? 1.0f : 0.8f;
-        float columnAlpha = (kindFactor + distanceNorm * (0.5f - kindFactor)) * intensity;
+        float nearAlpha = kind == Kind.RAIN ? 0.42f : 0.8f;
+        float farAlpha = kind == Kind.RAIN ? 0.16f : 0.5f;
+        float columnAlpha = (nearAlpha + distanceNorm * (farAlpha - nearAlpha)) * intensity;
         float u0 = column.uOffset();
         float u1 = u0 + 1.0f;
         // Vanilla's captured vOffset is already game-time animated; preserve it exactly once.
