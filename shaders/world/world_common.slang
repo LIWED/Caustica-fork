@@ -65,7 +65,7 @@ public struct WorldPush {
     public float4   airVolume;        // base density, height falloff, rebased base height, max distance
     public float4   waterParams;      // xyz camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy wave anchor, z previous wave time, w water-fog strength (0..2)
-    public float4   waterTuning;      // x wave strength 0..2, y transparency 0..2, z ground wetness 0..1, w reserved
+    public float4   waterTuning;      // x wave strength 0..2, y transparency 0..2, z ground wetness 0..1, w volumetric absorption 0..2
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
     public BreakEntry breaking[8];    // Java capacity and breakCount serialization are generated from this
@@ -251,6 +251,7 @@ public static const uint ENTITY_BIT = 0x800000u;
 public static const uint PARTICLE_BIT = 0x400000u; // particles share the entity cutout path
 public static const uint WEATHER_RAIN_FLAG = 1u << 29u; // particle prim: use neutral rain color
 public static const uint RAIN_SPLASH_FLAG = 1u << 28u; // rain-time water droplet: neutral spray
+public static const uint WEATHER_SNOW_FLAG = 1u << 27u; // snowflakes: softly lit blue-grey
 public static const uint IDX_MASK = 0x3FFFFFu;     // low 22 bits = geom-table index
 public static const uint BUCKET_CUTOUT = 1u;
 public static const uint BUCKET_TRANSLUCENT = 2u;

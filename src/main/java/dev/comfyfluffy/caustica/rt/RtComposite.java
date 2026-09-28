@@ -159,6 +159,10 @@ public final class RtComposite {
         return CausticaConfig.Rt.Composite.VOLUMETRIC_LIGHT.value();
     }
 
+    private static float volumetricAbsorption() {
+        return CausticaConfig.Rt.Composite.VOLUMETRIC_ABSORPTION.value();
+    }
+
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
@@ -983,7 +987,7 @@ public final class RtComposite {
                     airVolume,
                     waterParams,
                     waterAnchor,
-                    new Float4(waterWaveStrength(), waterTransparency(), sky.surfaceWetness(), 0.0f),
+                    new Float4(waterWaveStrength(), waterTransparency(), sky.surfaceWetness(), volumetricAbsorption()),
                     mvCurProjView,
                     breaking.length,
                     breaking,

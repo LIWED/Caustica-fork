@@ -555,6 +555,8 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.airFogStrength", "composite.air-fog-strength", 1.0f, 0.0f, 2.0f);
             public static final BooleanSetting VOLUMETRIC_LIGHT =
                     bool("caustica.rt.volumetricLight", "composite.volumetric-light", true);
+            public static final FloatSetting VOLUMETRIC_ABSORPTION =
+                    clampedFloat("caustica.rt.volumetricAbsorption", "composite.volumetric-absorption", 1.0f, 0.0f, 2.0f);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
                     radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =

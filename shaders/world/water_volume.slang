@@ -44,6 +44,9 @@ public float3 integrateWaterSingleScatter(float3 rayOrigin, float3 rayDir, float
     }
 
     float3 scatteringCoefficient = WATER_SCATTERING_COEFFICIENT * strength;
+    float absorption = clamp(worldPush.waterTuning.w, 0.0, 2.0);
+    // Match the air shaft control without changing direct water extinction.
+    float scatterShare = 2.0 / (1.0 + absorption);
     float3 referenceExtinction = baseExtinction + scatteringCoefficient;
     float3 scatteringFraction = clamp(scatteringCoefficient
             / max(referenceExtinction, float3(1.0e-5, 1.0e-5, 1.0e-5)), 0.0, 1.0);
@@ -59,11 +62,12 @@ public float3 integrateWaterSingleScatter(float3 rayOrigin, float3 rayDir, float
 
     float stepLength = marchDistance / float(WATER_VOLUME_SLICE_COUNT);
     float3 stepTransmittance = exp(-effectiveExtinction * stepLength);
+    float3 volumeStepTransmittance = exp(-effectiveExtinction * (stepLength * absorption));
     float3 sliceLostEnergy = clamp(1.0 - stepTransmittance, 0.0, 1.0);
     float3 sliceScatteredEnergy = sliceLostEnergy * scatteringFraction;
     float3 viewTransmittance = float3(1.0, 1.0, 1.0);
     float phaseBoost = clamp(4.0 * PI * waterTyndallPhase(dot(rayDir, lightDir)), 0.15, 6.0);
-    float3 directionalLight = normalizedLight * (0.125 * phaseBoost);
+    float3 directionalLight = normalizedLight * (0.35 * phaseBoost * scatterShare);
 
     for (uint slice = 0u; slice < WATER_VOLUME_SLICE_COUNT; ++slice) {
         // Independent strata move between frames and converge through the existing temporal denoiser.
@@ -74,11 +78,11 @@ public float3 integrateWaterSingleScatter(float3 rayOrigin, float3 rayDir, float
         float3 samplePosition = rayOrigin + rayDir * sampleDistance;
         VisibilityResult shadow = visibility(samplePosition, lightDir, 10000.0);
         float3 lightPathTransmittance = shadow.waterHitT > 0.0
-                ? exp(-effectiveExtinction * shadow.waterHitT)
+                ? exp(-effectiveExtinction * (shadow.waterHitT * absorption))
                 : float3(1.0, 1.0, 1.0);
         result += viewTransmittance * sliceScatteredEnergy * palette * directionalLight
                 * clamp(shadow.transmittance, 0.0, 1.0) * lightPathTransmittance;
-        viewTransmittance *= stepTransmittance;
+        viewTransmittance *= volumeStepTransmittance;
     }
 
     return min(result, scatteringBound);

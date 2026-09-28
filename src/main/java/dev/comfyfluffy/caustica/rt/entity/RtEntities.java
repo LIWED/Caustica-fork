@@ -98,6 +98,8 @@ public final class RtEntities {
     private static final int WEATHER_ALPHA_FLAG = 1 << 30;
     private static final int WEATHER_RAIN_FLAG = 1 << 29;
     private static final int RAIN_SPLASH_FLAG = 1 << 28;
+    private static final int WEATHER_SNOW_FLAG = 1 << 27;
+    private static final long WEATHER_TIME_ORIGIN_NANOS = System.nanoTime();
     private static final Identifier RAIN_TEXTURE = Identifier.fromNamespaceAndPath(
             "minecraft", "textures/environment/rain.png");
     private static final Identifier SNOW_TEXTURE = Identifier.fromNamespaceAndPath(
@@ -202,6 +204,9 @@ public final class RtEntities {
     private final RtParticleCapture particleCapture = new RtParticleCapture(capture);
     private final QuadParticleRenderState particleScratch = new QuadParticleRenderState();
     private final FloatArrayList particleDisp = new FloatArrayList();
+    private final FloatArrayList weatherDisp = new FloatArrayList();
+    private float previousWeatherTimeSeconds = Float.NaN;
+    private long previousWeatherFrameId = -1L;
     private IdentityHashMap<Particle, ParticlePrev> particlePrev = new IdentityHashMap<>();
     private IdentityHashMap<Particle, ParticlePrev> particleCur = new IdentityHashMap<>();
     private final float[] particleCenterScratch = new float[3];
@@ -209,7 +214,8 @@ public final class RtEntities {
 
     /** Capture only after the renderer has decided to cancel vanilla world rendering. */
     public void captureWeather(net.minecraft.client.renderer.state.level.WeatherRenderState state) {
-        weatherSnapshot = RtWeatherSnapshot.capture(state, RtComposite.frameCounter());
+        float timeSeconds = (System.nanoTime() - WEATHER_TIME_ORIGIN_NANOS) * 1.0e-9f;
+        weatherSnapshot = RtWeatherSnapshot.capture(state, RtComposite.frameCounter(), timeSeconds);
     }
 
     /** Previous frame's particle center (rebase-space) + that frame's rebase origin, for the MV diff. */
@@ -1063,10 +1069,19 @@ public final class RtEntities {
     /** Convert the immutable vanilla snapshot into one primary-only crossed-quad mesh and transient BLAS. */
     private void captureWeatherMesh(RtContext ctx, FrameBuild build, RtWeatherSnapshot snapshot,
                                     int rbx, int rby, int rbz, double cameraX, double cameraZ) {
-        RtWeatherSnapshot.Mesh weather = snapshot.mesh(rbx, rby, rbz, cameraX, cameraZ);
+        float previousTime = previousWeatherFrameId + 1L == snapshot.frameId()
+                && Float.isFinite(previousWeatherTimeSeconds)
+                && snapshot.timeSeconds() - previousWeatherTimeSeconds <= 0.1f
+                && snapshot.timeSeconds() >= previousWeatherTimeSeconds
+                ? previousWeatherTimeSeconds : snapshot.timeSeconds();
+        previousWeatherTimeSeconds = snapshot.timeSeconds();
+        previousWeatherFrameId = snapshot.frameId();
+        RtWeatherSnapshot.Mesh weather = snapshot.mesh(rbx, rby, rbz, cameraX, cameraZ, previousTime);
         if (weather.quads().isEmpty()) {
             return;
         }
+        boolean snowPresent = !snapshot.snowColumns().isEmpty();
+        weatherDisp.clear();
         capture.reset(weather.quads().size() * 4);
         capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
         capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(true);
@@ -1076,7 +1091,7 @@ public final class RtEntities {
             if (quad.kind() != currentKind) {
                 currentKind = quad.kind();
                 capture.currentFlags = WEATHER_ALPHA_FLAG
-                        | (currentKind == RtWeatherSnapshot.Kind.RAIN ? WEATHER_RAIN_FLAG : 0);
+                        | (currentKind == RtWeatherSnapshot.Kind.RAIN ? WEATHER_RAIN_FLAG : WEATHER_SNOW_FLAG);
                 textureSlot = RtEntityTextures.INSTANCE.slotForTexture(
                         currentKind == RtWeatherSnapshot.Kind.RAIN ? RAIN_TEXTURE : SNOW_TEXTURE);
                 capture.currentTexSlot = textureSlot;
@@ -1095,11 +1110,18 @@ public final class RtEntities {
                         | (light << 16) | (light << 8) | light;
                 capture.addVertex(vertex.x(), vertex.y(), vertex.z(), color, vertex.u(), vertex.v(),
                         0, 0, 0.0f, 0.0f, 0.0f);
+                if (snowPresent) {
+                    weatherDisp.add(vertex.motionX());
+                    weatherDisp.add(0.0f);
+                    weatherDisp.add(vertex.motionZ());
+                    weatherDisp.add(0.0f);
+                }
             }
         }
         if (!capture.isEmpty()) {
             build.logicalCount += snapshot.rainColumns().size() + snapshot.snowColumns().size();
-            appendCapture(ctx, build, NO_MOTION, -1,
+            Motion motion = snowPresent ? new Motion(uploadDisp(ctx, build, weatherDisp), 0f, 0f, 0f) : NO_MOTION;
+            appendCapture(ctx, build, motion, -1,
                     PARTICLE_BIT, PARTICLE_MASK, IDENTITY);
             RtFrameStats.FRAME.count("weatherColumnsCaptured",
                     snapshot.rainColumns().size() + snapshot.snowColumns().size());
@@ -2069,6 +2091,9 @@ public final class RtEntities {
         particlePrev.clear();
         particleCur.clear();
         particleDisp.clear();
+        weatherDisp.clear();
+        previousWeatherTimeSeconds = Float.NaN;
+        previousWeatherFrameId = -1L;
         glowBatches.clear();
         nameTagBatches.clear();
         resetPoseStack(blockEntityPoseStack);

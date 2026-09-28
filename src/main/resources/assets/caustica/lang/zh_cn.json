@@ -46,7 +46,9 @@
 	"caustica.options.rt.airFogStrength": "空气雾强度",
 	"caustica.options.rt.airFogStrength.tooltip": "在清澈空气和浓雾之间调整空气雾密度。",
 	"caustica.options.rt.volumetricLight": "体积光",
-	"caustica.options.rt.volumetricLight.tooltip": "在空气雾中加入受地形遮挡的太阳和月亮光柱。",
+	"caustica.options.rt.volumetricLight.tooltip": "在空气中加入受地形遮挡的太阳和月亮光柱。",
+	"caustica.options.rt.volumetricAbsorption": "体积光吸收率",
+	"caustica.options.rt.volumetricAbsorption.tooltip": "控制空气与水下光束的衰减。0% 光束更亮、更长；100% 为原效果；200% 衰减更快。不改变雾强度或水体透明度。",
 
 	"caustica.options.rt.hdr": "HDR 输出",
 	"caustica.options.rt.hdr.tooltip": "当显示器支持时，以 HDR (ST.2084/PQ) 而不是 SDR 显示。重启游戏后生效。",

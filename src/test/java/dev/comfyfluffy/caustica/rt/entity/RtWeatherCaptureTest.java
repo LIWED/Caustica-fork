@@ -51,7 +51,7 @@ final class RtWeatherCaptureTest {
 
         RtWeatherSnapshot.Mesh mesh = snapshot.mesh(100, 60, 200, 110.5, 220.5);
 
-        assertEquals(4, mesh.quads().size());
+        assertEquals(6, mesh.quads().size()); // rain 2; four-block snow column bends across 2 sections
         assertEquals(RtWeatherSnapshot.Kind.RAIN, mesh.quads().get(0).kind());
         assertEquals(RtWeatherSnapshot.Kind.SNOW, mesh.quads().get(2).kind());
         RtWeatherSnapshot.Vertex rainBottom = mesh.quads().get(0).vertices().getFirst();
@@ -63,7 +63,7 @@ final class RtWeatherCaptureTest {
         assertEquals(0.336f, rainBottom.alpha(), 1.0e-5f);
         assertEquals(0.35f, rainBottom.halfWidth(), 1.0e-5f);
         assertEquals(0x00F000A0, rainBottom.lightCoords());
-        assertEquals(0.5f, mesh.quads().get(2).vertices().getFirst().halfWidth(), 1.0e-5f);
+        assertEquals(0.4f, mesh.quads().get(2).vertices().getFirst().halfWidth(), 1.0e-5f);
     }
 
     @Test
@@ -94,8 +94,8 @@ final class RtWeatherCaptureTest {
 
         assertEquals(0.252f, mesh.quads().get(0).vertices().getFirst().alpha(), 1.0e-5f);
         assertEquals(0.096f, mesh.quads().get(2).vertices().getFirst().alpha(), 1.0e-5f);
-        assertEquals(0.48f, mesh.quads().get(4).vertices().getFirst().alpha(), 1.0e-5f);
-        assertEquals(0.3f, mesh.quads().get(6).vertices().getFirst().alpha(), 1.0e-5f);
+        assertEquals(0.372f, mesh.quads().get(4).vertices().getFirst().alpha(), 1.0e-5f);
+        assertEquals(0.228f, mesh.quads().get(6).vertices().getFirst().alpha(), 1.0e-5f);
     }
 
     @Test
@@ -109,5 +109,60 @@ final class RtWeatherCaptureTest {
 
         assertTrue(Float.isFinite(alpha));
         assertEquals(0.096f, alpha, 1.0e-5f);
+    }
+
+    @Test
+    void snowBendsInBothHorizontalDirectionsAndKeepsSegmentSeamsConnected() {
+        RtWeatherSnapshot.Column column = new RtWeatherSnapshot.Column(17, -9, 64, 73, 0f, 0.4f, 0x00F000F0);
+        RtWeatherSnapshot snapshot = new RtWeatherSnapshot(List.of(), List.of(column), 1f, 12, 3L, 2.5f);
+
+        RtWeatherSnapshot.Mesh mesh = snapshot.mesh(0, 0, 0, 17.5, -8.5, 2.48f);
+        assertEquals(6, mesh.quads().size()); // three paired segments
+        RtWeatherSnapshot.Vertex first = mesh.quads().get(0).vertices().getFirst();
+        RtWeatherSnapshot.Vertex middle = mesh.quads().get(2).vertices().getFirst();
+        RtWeatherSnapshot.Vertex last = mesh.quads().get(4).vertices().getFirst();
+        assertEquals(mesh.quads().get(0).vertices().get(1), middle);
+        assertEquals(mesh.quads().get(2).vertices().get(1), last);
+        assertNotEquals(middle.x() - first.x(), last.x() - middle.x(), 1.0e-4f);
+        assertNotEquals(mesh.quads().get(1).vertices().get(1).z() - mesh.quads().get(1).vertices().getFirst().z(),
+                mesh.quads().get(3).vertices().get(1).z() - mesh.quads().get(3).vertices().getFirst().z(), 1.0e-4f);
+        assertTrue(Math.abs(first.motionX()) + Math.abs(first.motionZ()) > 1.0e-5f);
+        assertEquals(column.topY() * 0.30f + column.vOffset(), first.v(), 1.0e-5f);
+    }
+
+    @Test
+    void snowDriftIsWorldAnchoredAndRainRemainsStationary() {
+        RtWeatherSnapshot.Column column = new RtWeatherSnapshot.Column(17, -9, 64, 73, 0f, 0f, 0x00F000F0);
+        RtWeatherSnapshot snapshot = new RtWeatherSnapshot(List.of(column), List.of(column), 1f, 12, 3L, 2.5f);
+        RtWeatherSnapshot.Mesh world = snapshot.mesh(0, 0, 0, 17.5, -8.5, 2.48f);
+        RtWeatherSnapshot.Mesh rebased = snapshot.mesh(16, 64, -16, 17.5, -8.5, 2.48f);
+        assertEquals(2, world.quads().stream().filter(q -> q.kind() == RtWeatherSnapshot.Kind.RAIN).count());
+        for (int i = 0; i < world.quads().size(); i++) {
+            for (int j = 0; j < 4; j++) {
+                RtWeatherSnapshot.Vertex a = world.quads().get(i).vertices().get(j);
+                RtWeatherSnapshot.Vertex b = rebased.quads().get(i).vertices().get(j);
+                assertEquals(a.x(), b.x() + 16f, 1.0e-5f);
+                assertEquals(a.y(), b.y() + 64f, 1.0e-5f);
+                assertEquals(a.z(), b.z() - 16f, 1.0e-5f);
+                assertEquals(a.motionX(), b.motionX(), 1.0e-5f);
+            }
+        }
+        assertEquals(0f, world.quads().getFirst().vertices().getFirst().motionX());
+    }
+
+    @Test
+    void snowUvsScrollDownWithVanillasNegativeTimeOffset() {
+        RtWeatherSnapshot.Column initial = new RtWeatherSnapshot.Column(0, 0, 64, 68, 0f, 0f, 0);
+        RtWeatherSnapshot.Column later = new RtWeatherSnapshot.Column(0, 0, 64, 68, 0f, -0.05f, 0);
+        RtWeatherSnapshot.Mesh first = new RtWeatherSnapshot(List.of(), List.of(initial), 1f, 4, 1L)
+                .mesh(0, 0, 0, 0.5, 0.5);
+        RtWeatherSnapshot.Mesh second = new RtWeatherSnapshot(List.of(), List.of(later), 1f, 4, 2L)
+                .mesh(0, 0, 0, 0.5, 0.5);
+
+        float bottomUv = first.quads().getFirst().vertices().getFirst().v();
+        float topUv = first.quads().getFirst().vertices().get(1).v();
+        assertTrue(bottomUv > topUv); // vanilla maps topY to the lower V coordinate
+        assertEquals(-0.05f, second.quads().getFirst().vertices().getFirst().v() - bottomUv, 1.0e-5f);
+        assertEquals(1.2f, bottomUv - first.quads().get(3).vertices().get(1).v(), 1.0e-5f);
     }
 }

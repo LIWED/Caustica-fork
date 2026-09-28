@@ -46,7 +46,9 @@
 	"caustica.options.rt.airFogStrength": "Atmospheric Fog Strength",
 	"caustica.options.rt.airFogStrength.tooltip": "Scale atmospheric fog density from clear air to dense haze.",
 	"caustica.options.rt.volumetricLight": "Volumetric Light",
-	"caustica.options.rt.volumetricLight.tooltip": "Add terrain-occluded sun and moon shafts within atmospheric fog.",
+	"caustica.options.rt.volumetricLight.tooltip": "Add terrain-occluded sun and moon shafts in air.",
+	"caustica.options.rt.volumetricAbsorption": "Volumetric Light Absorption",
+	"caustica.options.rt.volumetricAbsorption.tooltip": "Controls air and underwater shaft attenuation. 0% makes shafts brighter and longer; 100% keeps the previous look; 200% fades them faster. Fog strength and water clarity stay separate.",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Present in HDR (ST.2084/PQ) instead of SDR, when the display supports it. Takes effect after restarting the game.",

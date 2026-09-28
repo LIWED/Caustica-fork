@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             airFog(),
             airFogStrength(),
             volumetricLight(),
+            volumetricAbsorption(),
             dlssQuality(),
             hdrEnabled(),
             hdrPaperWhite(),
@@ -202,6 +203,17 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> volumetricLight() {
         return bool("caustica.options.rt.volumetricLight", CausticaConfig.Rt.Composite.VOLUMETRIC_LIGHT);
+    }
+
+    private static OptionInstance<Integer> volumetricAbsorption() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.VOLUMETRIC_ABSORPTION;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricAbsorption",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricAbsorption.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR

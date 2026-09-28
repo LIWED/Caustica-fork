@@ -310,6 +310,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                 ? float3(0.50, 0.50, 0.50)
                 : (pr.flags & WEATHER_RAIN_FLAG) != 0u
                 ? float3(0.43, 0.44, 0.45)
+                : (pr.flags & WEATHER_SNOW_FLAG) != 0u
+                ? float3(0.43, 0.45, 0.47)
                 : srgbToLinear(entityAlbedoTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb);
         payload.albedo = half3(rainSplash ? particleColor : particleColor * pr.tint.rgb);
         payload.normal = half3(pn);
