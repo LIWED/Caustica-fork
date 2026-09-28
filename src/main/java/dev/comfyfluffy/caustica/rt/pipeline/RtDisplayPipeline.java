@@ -44,6 +44,7 @@ public final class RtDisplayPipeline {
     private long boundRtView;
     private long boundExposureView;
     private long boundHdrView;
+    private boolean bindingsDirty = true;
     private boolean destroyed;
 
     private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -113,7 +114,7 @@ public final class RtDisplayPipeline {
     }
 
     public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView) {
-        if (boundOutputView == outputImageView && boundRtView == rtImageView
+        if (!bindingsDirty && boundOutputView == outputImageView && boundRtView == rtImageView
                 && boundExposureView == exposureImageView && boundHdrView == hdrImageView) {
             return;
         }
@@ -142,6 +143,12 @@ public final class RtDisplayPipeline {
         boundRtView = rtImageView;
         boundExposureView = exposureImageView;
         boundHdrView = hdrImageView;
+        bindingsDirty = false;
+    }
+
+    /** Called after the device is idle, before resized image views are destroyed. */
+    public void invalidateBindings() {
+        bindingsDirty = true;
     }
 
     /**

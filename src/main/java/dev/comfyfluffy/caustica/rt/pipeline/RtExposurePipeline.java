@@ -49,6 +49,7 @@ final class RtExposurePipeline {
     private long boundHistogramBufferForHist;
     private long boundHistogramBufferForResolve;
     private long boundExposureView;
+    private boolean bindingsDirty = true;
     private long boundStateBuffer;
     private boolean destroyed;
 
@@ -127,7 +128,7 @@ final class RtExposurePipeline {
     }
 
     void setResources(long colorView, RtBuffer histogram, long exposureView, RtBuffer state) {
-        if (boundColorView != colorView || boundHistogramBufferForHist != histogram.handle) {
+        if (bindingsDirty || boundColorView != colorView || boundHistogramBufferForHist != histogram.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorImageInfo.Buffer colorInfo = VkDescriptorImageInfo.calloc(1, stack);
                 colorInfo.get(0).imageView(colorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
@@ -143,7 +144,7 @@ final class RtExposurePipeline {
             boundColorView = colorView;
             boundHistogramBufferForHist = histogram.handle;
         }
-        if (boundHistogramBufferForResolve != histogram.handle || boundExposureView != exposureView
+        if (bindingsDirty || boundHistogramBufferForResolve != histogram.handle || boundExposureView != exposureView
                 || boundStateBuffer != state.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorBufferInfo.Buffer histInfo = VkDescriptorBufferInfo.calloc(1, stack);
@@ -165,6 +166,12 @@ final class RtExposurePipeline {
             boundExposureView = exposureView;
             boundStateBuffer = state.handle;
         }
+        bindingsDirty = false;
+    }
+
+    /** Force both exposure descriptor sets to refresh after the traced image is recreated. */
+    public void invalidateBindings() {
+        bindingsDirty = true;
     }
 
     void dispatchHistogram(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height) {

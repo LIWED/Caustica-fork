@@ -47,6 +47,7 @@ public final class RtHdrCompositePipeline {
     private long boundHdrView;
     private long boundOverlayView;
     private long boundSampler;
+    private boolean bindingsDirty = true;
     private boolean destroyed;
 
     private RtHdrCompositePipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -114,7 +115,8 @@ public final class RtHdrCompositePipeline {
 
     /** Bind the in-place HDR image (storage) and the overlay (combined image sampler, GENERAL layout). */
     public void setImages(long hdrImageView, long overlayImageView, long sampler) {
-        if (boundHdrView == hdrImageView && boundOverlayView == overlayImageView && boundSampler == sampler) {
+        if (!bindingsDirty && boundHdrView == hdrImageView && boundOverlayView == overlayImageView
+                && boundSampler == sampler) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -133,6 +135,12 @@ public final class RtHdrCompositePipeline {
         boundHdrView = hdrImageView;
         boundOverlayView = overlayImageView;
         boundSampler = sampler;
+        bindingsDirty = false;
+    }
+
+    /** Force a descriptor write after an image view is replaced, even if its handle is recycled. */
+    public void invalidateBindings() {
+        bindingsDirty = true;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteNits) {

@@ -756,6 +756,11 @@ public final class RtComposite {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
+        // Vulkan may recycle a destroyed view's numeric handle. Refresh cached descriptors even if
+        // all new handles happen to compare equal, before later UI/blur allocations reuse the memory.
+        if (displayPipeline != null) displayPipeline.invalidateBindings();
+        exposure.invalidateBindings();
+        if (hdrCompositePipeline != null) hdrCompositePipeline.invalidateBindings();
         // Drop old NGX history before allocating the replacement images. Keeping both live can
         // push a full-resolution mode change over the GPU memory budget.
         RtDlssRr.INSTANCE.releaseFeatureAfterIdle();
@@ -1756,6 +1761,8 @@ public final class RtComposite {
         }
         if (sdrPresentImage == null || sdrPresentImage.width != swapW || sdrPresentImage.height != swapH) {
             if (sdrPresentImage != null) {
+                ctx.waitIdle();
+                sdrPresentPipeline.invalidateBindings();
                 sdrPresentImage.destroy();
             }
             sdrPresentImage = ctx.createStorageImage(swapW, swapH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,

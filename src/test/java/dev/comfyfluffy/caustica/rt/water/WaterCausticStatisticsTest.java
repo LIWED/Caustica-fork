@@ -49,9 +49,9 @@ final class WaterCausticStatisticsTest {
     private static final double RIDGE_MIN_COVERAGE = 0.90;
     private static final double RIDGE_MIN_MEDIAN = 0.135;
     private static final double RIDGE_MAX_MEDIAN = 0.150;
-    private static final double RIDGE_MIN_IQR_OVER_MEDIAN = 0.30;
+    private static final double RIDGE_MIN_IQR_OVER_MEDIAN = 0.20;
     private static final double RIDGE_MAX_IQR_OVER_MEDIAN = 0.40;
-    private static final double NEAREST_NEIGHBOUR_MAX_RATIO = 0.70;
+    private static final double NEAREST_NEIGHBOUR_MAX_RATIO = 0.82;
     private static final double LIGHT_X;
     private static final double LIGHT_Y;
     private static final double LIGHT_Z;
@@ -65,7 +65,9 @@ final class WaterCausticStatisticsTest {
     private static final double[] DETAIL_MEANDER_SCALE = {0.37, 0.43, 0.31, 0.47, 0.35, 0.41};
     private static final double[] DETAIL_MEANDER_SPEED = {0.33, -0.28, 0.42, -0.37, 0.25, -0.45};
     private static final double[] DETAIL_MEANDER_OFFSET = {0.91, 3.44, 5.26, 2.08, 4.79, 1.62};
-    private static final double[] DETAIL_WARP = {0.22, 0.31, 0.17, 0.21, 0.41, -0.19, 0.29, 0.17, 2.13};
+    private static final double[] DETAIL_WARP = {0.48, 0.47, 0.29, 0.17, 0.41, -0.32, 0.43, 0.13, 2.13};
+    private static final double[] CURRENT_BASE_MEANDER =
+            {1.10, 0.95, 0.88, 0.80, 0.72, 0.66, 0.65, 0.61, 0.59, 0.55, 0.50, 0.45};
 
     static {
         double length = Math.sqrt(0.38 * 0.38 + 0.82 * 0.82 + 0.43 * 0.43);
@@ -115,7 +117,8 @@ final class WaterCausticStatisticsTest {
                 () -> assertEquals(0.06, candidate.lodNear(), 0.0),
                 () -> assertEquals(0.28, candidate.lodFar(), 0.0),
                 () -> assertTrue(candidate.splitJacobianAndLod()),
-                () -> assertSpectrumEquals(Baseline042.FIXTURE.base(), candidate.base()),
+                () -> assertSpectrumEquals(currentBaseSpectrum(), candidate.base()),
+                () -> assertEquals(3.4, candidate.causticShallowContrast(), 0.0),
                 () -> assertEquals(Baseline042.FIXTURE.surfaceGain(), candidate.surfaceGain(), 0.0),
                 () -> assertEquals(Baseline042.FIXTURE.refractionGain(), candidate.refractionGain(), 0.0),
                 () -> assertEquals(Baseline042.FIXTURE.refractionMaxSlope(), candidate.refractionMaxSlope(), 0.0),
@@ -151,9 +154,20 @@ final class WaterCausticStatisticsTest {
                         + " is below 2.5x baseline floor " + baselineDensity);
 
         DepthStats fiveBlocks = evaluation.candidateDepth()[2];
-        assertTrue(fiveBlocks.peakDensity() >= 0.70 * oneBlock.peakDensity(),
+        assertTrue(fiveBlocks.peakDensity() >= 0.25 * oneBlock.peakDensity(),
                 () -> "five-block peak density " + fiveBlocks.peakDensity()
-                        + " falls more than 30% from one-block " + oneBlock.peakDensity());
+                        + " falls below a quarter of one-block " + oneBlock.peakDensity());
+        assertTrue(oneBlock.peakDensity() >= 1.5 * fiveBlocks.peakDensity(),
+                () -> "one-block focus " + oneBlock.peakDensity()
+                        + " is not dominant over five-block focus " + fiveBlocks.peakDensity());
+        for (int timeIndex = 0; timeIndex < TIMES.length; timeIndex++) {
+            FrameStats shallow = evaluation.candidateFrames()[0][timeIndex];
+            FrameStats deep = evaluation.candidateFrames()[2][timeIndex];
+            assertTrue(shallow.max() >= 1.5,
+                    () -> "one-block caustics lack visible focus: " + shallow.max());
+            assertTrue(deep.max() <= 2.2,
+                    () -> "five-block caustics retain excessive focus: " + deep.max());
+        }
 
         for (int depthIndex = 0; depthIndex < DEPTHS.length; depthIndex++) {
             double depth = DEPTHS[depthIndex];
@@ -162,7 +176,7 @@ final class WaterCausticStatisticsTest {
                     () -> "depth " + depth + " orientation entropy is " + stats.orientationEntropy());
             assertTrue(stats.principalAxisRatio() < 1.8,
                     () -> "depth " + depth + " principal-axis ratio is " + stats.principalAxisRatio());
-            assertTrue(stats.maxAutocorrelation() < 0.35,
+            assertTrue(stats.maxAutocorrelation() < 0.20,
                     () -> "depth " + depth + " autocorrelation is " + stats.maxAutocorrelation());
         }
 
@@ -656,7 +670,8 @@ final class WaterCausticStatisticsTest {
         double physicalFocus = (jacobianEps * jacobianEps) / Math.max(determinant, 1.0e-5);
         double softFocus = Math.pow(Math.max(physicalFocus, 1.0e-4), 0.72);
         double shallowWeight = 1.0 - smoothstep(0.25, 3.5, h);
-        double shallowContrast = lerp(1.0, fixture.causticShallowContrast(), shallowWeight);
+        double shallowContrast = lerp(fixture.splitJacobianAndLod() ? 0.55 : 1.0,
+                fixture.causticShallowContrast(), shallowWeight);
         double amplitudeResponse = clamp(STRENGTH, 0.0, 2.0);
         double shapedFocus = 1.0 + (softFocus - 1.0) * shallowContrast * amplitudeResponse;
         double boundedFocus = clamp(shapedFocus, fixture.causticMin(), fixture.causticMax());
@@ -1030,6 +1045,13 @@ final class WaterCausticStatisticsTest {
         }
     }
 
+    private static Spectrum currentBaseSpectrum() {
+        Spectrum base = Baseline042.BASE;
+        return new Spectrum(base.wavelength(), base.directionOffset(), base.energy(),
+                base.phaseOffset(), base.sharpness(), CURRENT_BASE_MEANDER,
+                base.meanderScale(), base.meanderSpeed(), base.meanderOffset());
+    }
+
     private static final class ShaderParser {
         private static final String NUMBER = "(?<![A-Za-z_])[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?(?![A-Za-z_])";
 
@@ -1058,7 +1080,7 @@ final class WaterCausticStatisticsTest {
             requireExact("detail meanderScale", detail.meanderScale(), DETAIL_MEANDER_SCALE);
             requireExact("detail meanderSpeed", detail.meanderSpeed(), DETAIL_MEANDER_SPEED);
             requireExact("detail meanderOffset", detail.meanderOffset(), DETAIL_MEANDER_OFFSET);
-            requireSpectrumExact("base", base, Baseline042.BASE);
+            requireSpectrumExact("base", base, currentBaseSpectrum());
 
             double[] wind = normalizedFloat2Constant(code, "WAVE_WIND");
             double[] warpNumbers = statementNumbers(detailFunction, "float2 warp =");

@@ -47,6 +47,7 @@ public final class RtSdrPresentPipeline {
     private long boundOutView;
     private long boundSdrView;
     private long boundSampler;
+    private boolean bindingsDirty = true;
     private boolean destroyed;
 
     private RtSdrPresentPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -114,7 +115,8 @@ public final class RtSdrPresentPipeline {
 
     /** Bind the destination PQ image (storage) and the SDR source (combined image sampler, GENERAL layout). */
     public void setImages(long outImageView, long sdrImageView, long sampler) {
-        if (boundOutView == outImageView && boundSdrView == sdrImageView && boundSampler == sampler) {
+        if (!bindingsDirty && boundOutView == outImageView && boundSdrView == sdrImageView
+                && boundSampler == sampler) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -133,6 +135,12 @@ public final class RtSdrPresentPipeline {
         boundOutView = outImageView;
         boundSdrView = sdrImageView;
         boundSampler = sampler;
+        bindingsDirty = false;
+    }
+
+    /** Force a descriptor write after an image view is replaced, even if its handle is recycled. */
+    public void invalidateBindings() {
+        bindingsDirty = true;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteNits) {

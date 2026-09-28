@@ -421,6 +421,8 @@ final class RtTerrainMesher {
         private final List<PendingQuad> pending = new ArrayList<>(8);
         private int pendingCount;
         private int[] gidScratch = new int[0];
+        private final int[] rainSkyScratch = new int[9];
+        private final float[] rainCornerScratch = new float[4];
 
         /** Capture a final Fabric Renderer API quad before raster AO/directional lighting is applied. */
         private void putFabric(MutableQuadView quad) {
@@ -439,7 +441,17 @@ final class RtTerrainMesher {
             if (len > 1.0e-6f) { nx /= len; ny /= len; nz /= len; }
             q.nx = nx; q.ny = ny; q.nz = nz;
             q.rainBiome = ny > 0.85f && view instanceof RtSectionSnapshots.Region region
-                    && region.rainsAt(pos);
+                    && region.rainBiomeAt(pos);
+            if (q.rainBiome) {
+                RtSectionSnapshots.Region region = (RtSectionSnapshots.Region) view;
+                region.rainExposureCorners(pos, rainSkyScratch, rainCornerScratch);
+                for (int i = 0; i < 4; i++) {
+                    q.rainExposure[i] = RtRainExposure.at(rainCornerScratch,
+                            q.x[i] - originX, q.z[i] - originZ);
+                }
+                q.rainBiome = q.rainExposure[0] > 0.0f || q.rainExposure[1] > 0.0f
+                        || q.rainExposure[2] > 0.0f || q.rainExposure[3] > 0.0f;
+            }
 
             ChunkSectionLayer layer = quad.chunkLayer();
             q.cutout = layer != ChunkSectionLayer.SOLID;
@@ -631,7 +643,10 @@ final class RtTerrainMesher {
                 prim.add(0f);
                 prim.add(Float.intBitsToFloat(q.materialId)); // TerrainPrim.materialId uint bits
                 prim.add(Float.intBitsToFloat(q.rainBiome ? 2 : 0)); // rain-eligible biome, bit 1
-                prim.add(0f); // aux0
+                int rainLevels = q.rainBiome ? (t == 0
+                        ? RtRainExposure.packTriangle(q.rainExposure[0], q.rainExposure[1], q.rainExposure[2])
+                        : RtRainExposure.packTriangle(q.rainExposure[0], q.rainExposure[2], q.rainExposure[3])) : 0;
+                prim.add(Float.intBitsToFloat(rainLevels)); // aux0: three vertex rain-exposure bytes
                 prim.add(0f); // aux1
                 g.ommSprites.add(q.sprite);
             }
@@ -647,6 +662,7 @@ final class RtTerrainMesher {
         boolean translucent; // TRANSLUCENT layer (stained glass / ice): colored-transmission dielectric
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
         boolean rainBiome;
+        final float[] rainExposure = new float[4];
         float tr, tg, tb, emission;
         int materialId;
         TextureAtlasSprite sprite;

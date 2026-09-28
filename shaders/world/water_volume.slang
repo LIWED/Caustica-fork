@@ -26,8 +26,8 @@ public float3 waterScatterPalette(float3 transmittance) {
     float3 lostEnergy = clamp(1.0 - transmittance, 0.0, 1.0);
     float opticalAmount = dot(lostEnergy, float3(0.2126, 0.7152, 0.0722));
     float depthMix = smoothstep(0.05, 0.62, opticalAmount);
-    float3 shallowEmerald = float3(0.08, 0.72, 0.46);
-    float3 deepCyan = float3(0.04, 0.36, 0.68);
+    float3 shallowEmerald = float3(0.10, 0.58, 0.55);
+    float3 deepCyan = float3(0.045, 0.34, 0.59);
     return lerp(shallowEmerald, deepCyan, depthMix);
 }
 

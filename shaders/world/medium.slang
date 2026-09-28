@@ -9,7 +9,7 @@
 import world_common;
 import world_core;
 
-public static const float3 WATER_ABSORPTION_BASE = float3(0.118, 0.052, 0.058);
+public static const float3 WATER_ABSORPTION_BASE = float3(0.170, 0.060, 0.032);
 public static const float WATER_BIOME_ABSORPTION = 0.035;
 public float3 waterExtinction(float3 tint) {
     return WATER_ABSORPTION_BASE + WATER_BIOME_ABSORPTION

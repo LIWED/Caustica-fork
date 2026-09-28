@@ -61,8 +61,8 @@ public void waterWaveSpectrum<let WITH_DT : int>(float2 p, float t, float footpr
         1.52, 1.58, 1.64, 1.70, 1.76, 1.82
     };
     const float meanderAmplitude[WAVE_COMPONENT_COUNT] = {
-        0.95, 0.82, 0.73, 0.66, 0.58, 0.51,
-        0.45, 0.39, 0.34, 0.29, 0.25, 0.21
+        1.10, 0.95, 0.88, 0.80, 0.72, 0.66,
+        0.65, 0.61, 0.59, 0.55, 0.50, 0.45
     };
     const float meanderScale[WAVE_COMPONENT_COUNT] = {
         0.23, 0.31, 0.27, 0.36, 0.29, 0.41,
@@ -257,7 +257,7 @@ public static const int CAUSTIC_DETAIL_COMPONENT_COUNT = 6;
 public static const float CAUSTIC_JACOBIAN_EPS = 0.06;
 public static const float CAUSTIC_LOD_NEAR = 0.06;
 public static const float CAUSTIC_LOD_FAR = 0.28;
-public static const float CAUSTIC_SHALLOW_CONTRAST = 1.65;
+public static const float CAUSTIC_SHALLOW_CONTRAST = 3.4;
 public static const float CAUSTIC_MIN = 0.45;
 public static const float CAUSTIC_MAX = 3.2;
 public static const float CAUSTIC_FADE_START = 12.0;
@@ -292,16 +292,16 @@ public void waterCausticDetailSpectrum(float2 p, float t, float footprint, out f
         0.91, 3.44, 5.26, 2.08, 4.79, 1.62
     };
 
-    float warpPhaseX = dot(p, float2(0.31, 0.17)) - 0.21 * t + 0.41;
-    float warpPhaseZ = dot(p, float2(-0.19, 0.29)) + 0.17 * t + 2.13;
-    float2 warp = 0.22 * float2(
-            sin(dot(p, float2(0.31, 0.17)) - 0.21 * t + 0.41),
-            sin(dot(p, float2(-0.19, 0.29)) + 0.17 * t + 2.13));
+    float warpPhaseX = dot(p, float2(0.47, 0.29)) - 0.17 * t + 0.41;
+    float warpPhaseZ = dot(p, float2(-0.32, 0.43)) + 0.13 * t + 2.13;
+    float2 warp = 0.48 * float2(
+            sin(dot(p, float2(0.47, 0.29)) - 0.17 * t + 0.41),
+            sin(dot(p, float2(-0.32, 0.43)) + 0.13 * t + 2.13));
     float cosWarpX = cos(warpPhaseX);
     float cosWarpY = cos(warpPhaseZ);
     float2 warpedP = p + warp;
-    float2 warpDx = 0.22 * float2(0.31 * cosWarpX, -0.19 * cosWarpY);
-    float2 warpDz = 0.22 * float2(0.17 * cosWarpX, 0.29 * cosWarpY);
+    float2 warpDx = 0.48 * float2(0.47 * cosWarpX, -0.32 * cosWarpY);
+    float2 warpDz = 0.48 * float2(0.29 * cosWarpX, 0.43 * cosWarpY);
 
     t *= WAVE_SPEED;
     grad = float2(0.0, 0.0);
@@ -386,7 +386,7 @@ public float waterCaustic(float3 receiverPos, float3 stableLightDir, float depth
     // Very shallow mappings remain close to the identity even when short ripples carry visible
     // curvature. Recover only their deviation from neutral, so a flat surface still returns 1.0.
     float shallowWeight = 1.0 - smoothstep(0.25, 3.5, h);
-    float shallowContrast = lerp(1.0, CAUSTIC_SHALLOW_CONTRAST, shallowWeight);
+    float shallowContrast = lerp(0.55, CAUSTIC_SHALLOW_CONTRAST, shallowWeight);
     float amplitudeResponse = clamp(strength, 0.0, 2.0);
     float shapedFocus = 1.0 + (softFocus - 1.0)
             * shallowContrast * amplitudeResponse;

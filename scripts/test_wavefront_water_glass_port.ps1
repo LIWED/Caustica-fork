@@ -396,9 +396,9 @@ foreach ($arrayName in $causticDetailArrays.Keys) {
         -DeclaredSize 'CAUSTIC_DETAIL_COMPONENT_COUNT' -Expected $causticDetailArrays[$arrayName] `
         -Message "Caustic detail array '$arrayName' does not match the six approved values exactly."
 }
-Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warp = 0\.22 \* float2\(\s*sin\(dot\(p, float2\(0\.31, 0\.17\)\) - 0\.21 \* t \+ 0\.41\),\s*sin\(dot\(p, float2\(-0\.19, 0\.29\)\) \+ 0\.17 \* t \+ 2\.13\)\);' -Message 'Caustic detail does not use the exact approved analytic warp.'
-Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warpedP = p \+ warp;.*?float2 warpDx = 0\.22 \* float2\(0\.31 \* cosWarpX, -0\.19 \* cosWarpY\);.*?float2 warpDz = 0\.22 \* float2\(0\.17 \* cosWarpX, 0\.29 \* cosWarpY\);' -Message 'Caustic detail does not propagate the analytic warp derivatives.'
-Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warp = 0\.22 \* float2\(.*?\);.*?t \*= WAVE_SPEED;.*?for \(int i = 0; i < CAUSTIC_DETAIL_COMPONENT_COUNT; i\+\+\).*?float lambda = wavelength\[i\];.*?float lodWeight = waterWaveLodWeight\(lambda, footprint\);.*?float k = 2\.0 \* PI / lambda;.*?float w = sqrt\(WAVE_G \* k\);.*?float angle = directionOffset\[i\];.*?float phase = k \* dot\(d, warpedP\) - w \* t \+ phaseOffset\[i\];.*?float meanderSpatialRate = meanderScale\[i\] \* k;.*?float meanderPhaseDt = meanderSpeed\[i\] \* w;.*?float meanderPhase = meanderSpatialRate \* dot\(perpendicular, warpedP\).*?\+ meanderPhaseDt \* t \+ meanderOffset\[i\];.*?phase \+= meanderAmplitude\[i\] \* sin\(meanderPhase\);' -Message 'Caustic detail does not consume every approved component through raw-time warp, deep-water dispersion, LOD, direction, and analytic meander.'
+Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warp = 0\.48 \* float2\(\s*sin\(dot\(p, float2\(0\.47, 0\.29\)\) - 0\.17 \* t \+ 0\.41\),\s*sin\(dot\(p, float2\(-0\.32, 0\.43\)\) \+ 0\.13 \* t \+ 2\.13\)\);' -Message 'Caustic detail does not use the exact analytic warp.'
+Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warpedP = p \+ warp;.*?float2 warpDx = 0\.48 \* float2\(0\.47 \* cosWarpX, -0\.32 \* cosWarpY\);.*?float2 warpDz = 0\.48 \* float2\(0\.29 \* cosWarpX, 0\.43 \* cosWarpY\);' -Message 'Caustic detail does not propagate the analytic warp derivatives.'
+Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warp = 0\.48 \* float2\(.*?\);.*?t \*= WAVE_SPEED;.*?for \(int i = 0; i < CAUSTIC_DETAIL_COMPONENT_COUNT; i\+\+\).*?float lambda = wavelength\[i\];.*?float lodWeight = waterWaveLodWeight\(lambda, footprint\);.*?float k = 2\.0 \* PI / lambda;.*?float w = sqrt\(WAVE_G \* k\);.*?float angle = directionOffset\[i\];.*?float phase = k \* dot\(d, warpedP\) - w \* t \+ phaseOffset\[i\];.*?float meanderSpatialRate = meanderScale\[i\] \* k;.*?float meanderPhaseDt = meanderSpeed\[i\] \* w;.*?float meanderPhase = meanderSpatialRate \* dot\(perpendicular, warpedP\).*?\+ meanderPhaseDt \* t \+ meanderOffset\[i\];.*?phase \+= meanderAmplitude\[i\] \* sin\(meanderPhase\);' -Message 'Caustic detail does not consume every approved component through raw-time warp, deep-water dispersion, LOD, direction, and analytic meander.'
 Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float2 warpedPhaseGradient = k \* d;.*?warpedPhaseGradient \+= meanderAmplitude\[i\] \* cos\(meanderPhase\).*?float2 phaseGradient = float2\(\s*dot\(warpedPhaseGradient, float2\(1\.0, 0\.0\) \+ warpDx\),\s*dot\(warpedPhaseGradient, float2\(0\.0, 1\.0\) \+ warpDz\)\);.*?grad \+= amplitude \* cosPh \* e \* phaseGradient;.*?grad \*= WATER_WAVE_STRENGTH;' -Message 'Caustic detail does not carry the warped phase derivative into its raw gradient.'
 Require-Match -Text $waterCausticDetailCode -Pattern '(?s)float S = sharpness\[i\];.*?float e = exp\(S \* \(sinPh - 1\.0\)\);.*?float amplitude = lodWeight \* \(energy\[i\] / k\) \* S;' -Message 'Caustic detail does not consume its approved energy and sharpness through the sharp-crest profile.'
 Require-NoMatch -Text $waterCausticDetailCode -Pattern '\b(?:strength|CAUSTIC_DETAIL_GAIN|WATER_CAUSTIC_GAIN|WATER_CAUSTIC_MAX_SLOPE|waterBoundRoleGrad)\b' -Message 'Caustic detail applies an extra detail/role gain, strength, or slope bound before base/detail combination.'
@@ -422,7 +422,7 @@ Require-NoMatch -Text $causticLandingCode -Pattern 'CAUSTIC_(?:JACOBIAN_EPS|LOD_
 Require-Match -Text $waterCausticCode -Pattern 'float lodFootprint = lerp\(CAUSTIC_LOD_NEAR, CAUSTIC_LOD_FAR, depthBlur\);' -Message 'Caustic spectrum filtering is not depth adaptive through the split LOD role.'
 Require-Match -Text $waterCausticCode -Pattern '(?s)float2 p0 = causticLanding\(base, t, inc, h, lodFootprint, strength\);\s*float2 px = causticLanding\(base \+ float2\(CAUSTIC_JACOBIAN_EPS, 0\.0\), t, inc, h, lodFootprint, strength\);\s*float2 pz = causticLanding\(base \+ float2\(0\.0, CAUSTIC_JACOBIAN_EPS\), t, inc, h, lodFootprint, strength\);' -Message 'Caustic landing samples do not separate fixed Jacobian offsets from the shared LOD footprint.'
 Require-Match -Text $waterCausticCode -Pattern 'float physicalFocus = \(CAUSTIC_JACOBIAN_EPS \* CAUSTIC_JACOBIAN_EPS\) / max\(det, 1\.0e-5\);' -Message 'Physical focus does not use the fixed Jacobian epsilon in its area numerator.'
-Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_SHALLOW_CONTRAST = 1\.65;' -Message 'Shallow physical focus has no bounded contrast recovery.'
+Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_SHALLOW_CONTRAST = 3\.4;' -Message 'Shallow physical focus has no bounded contrast recovery.'
 Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_MIN = 0\.45;' -Message 'The approved caustic minimum bound changed.'
 Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_MAX = 3\.2;' -Message 'The approved caustic maximum bound changed.'
 Require-Match -Text $waterCode -Pattern 'public static const float CAUSTIC_FADE_START = 12\.0;' -Message 'The approved deep-caustic fade start changed.'
@@ -471,7 +471,7 @@ function Get-WaterEffectiveExtinctionCpu {
 
 # Direct absorption is calibrated independently from Water Fog. Higher transparency must increase
 # transmission, greater depth must decrease it, and the approved 5/10-block anchors are literal fixtures.
-$approvedWaterBase = @(0.118, 0.052, 0.058)
+$approvedWaterBase = @(0.170, 0.060, 0.032)
 $defaultTint = @(0.25, 0.46, 0.90)
 $waterAbsorptionBaseMatch = [regex]::Match(
     $mediumCode,
@@ -517,8 +517,8 @@ if (-not $waterAbsorptionBaseMatch.Success -or -not $waterBiomeAbsorptionMatch.S
     }
 
     $expectedTransparencyAnchors = @{
-        5 = @{ 0 = @(0.241, 0.348, 0.365); 1 = @(0.343, 0.494, 0.519); 2 = @(0.486, 0.702, 0.735) }
-        10 = @{ 0 = @(0.058, 0.121, 0.133); 1 = @(0.117, 0.244, 0.269); 2 = @(0.236, 0.492, 0.541) }
+        5 = @{ 0 = @(0.186, 0.335, 0.416); 1 = @(0.264, 0.475, 0.590); 2 = @(0.375, 0.674, 0.837) }
+        10 = @{ 0 = @(0.035, 0.112, 0.173); 1 = @(0.070, 0.226, 0.348); 2 = @(0.141, 0.454, 0.701) }
     }
     $waterTransparencyTransmission = @{}
     foreach ($distance in @(1, 5, 10, 20)) {
@@ -567,7 +567,7 @@ if (-not $waterAbsorptionBaseMatch.Success -or -not $waterBiomeAbsorptionMatch.S
     }
 }
 
-Require-Match -Text $mediumCode -Pattern 'public static const float3 WATER_ABSORPTION_BASE = float3\(0\.118, 0\.052, 0\.058\);' -Message 'Water absorption is not calibrated to the approved emerald/cyan spectral baseline.'
+Require-Match -Text $mediumCode -Pattern 'public static const float3 WATER_ABSORPTION_BASE = float3\(0\.170, 0\.060, 0\.032\);' -Message 'Water absorption is not calibrated to the approved teal spectral baseline.'
 Require-Match -Text $mediumCode -Pattern 'public static const float WATER_BIOME_ABSORPTION = 0\.035;' -Message 'Biome colour is not constrained to the unchanged subtle absorption influence.'
 Require-Match -Text $mediumCode -Pattern '(?s)return WATER_ABSORPTION_BASE \+ WATER_BIOME_ABSORPTION\s*\* \(float3\(1\.0, 1\.0, 1\.0\) - clamp\(tint, 0\.0, 1\.0\)\);' -Message 'Water extinction does not combine the spectral baseline with the subtle biome term.'
 Require-Match -Text $medium -Pattern 'public float waterTyndallPhase\(float cosTheta\)' -Message 'Water has no directional phase response for the Tyndall effect.'
@@ -713,8 +713,8 @@ if ([regex]::Matches($passAParenthesizedPackedThroughputProbe, $passAContinuatio
         -or [regex]::Matches($passAParenthesizedPackedThroughputProbe, $passAPackedFieldMutationPattern).Count -ne 2) {
     $failures.Add('Pass A parenthesized packed-throughput probe bypassed both direct member guards.')
 }
-Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 shallowEmerald = float3\(0\.08, 0\.72, 0\.46\);' -Message 'Water volume does not use the approved shallow emerald palette endpoint.'
-Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 deepCyan = float3\(0\.04, 0\.36, 0\.68\);' -Message 'Water volume does not use the approved deep cyan palette endpoint.'
+Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 shallowEmerald = float3\(0\.10, 0\.58, 0\.55\);' -Message 'Water volume does not use the approved shallow teal palette endpoint.'
+Require-Match -Text $waterScatterPaletteCode -Pattern 'float3 deepCyan = float3\(0\.045, 0\.34, 0\.59\);' -Message 'Water volume does not use the approved deep cyan palette endpoint.'
 Require-Match -Text $waterScatterPaletteCode -Pattern 'return lerp\(shallowEmerald, deepCyan, depthMix\);' -Message 'Water volume does not interpolate the approved emerald/cyan palette endpoints.'
 Require-Match -Text $waterVolume -Pattern '(?s)float marchDistance = min\(segmentDistance, WATER_VOLUME_MAX_DISTANCE\);.*?float stepLength = marchDistance / float\(WATER_VOLUME_SLICE_COUNT\);.*?float3 stepTransmittance = exp\(-effectiveExtinction \* stepLength\);.*?for \(uint slice = 0u; slice < WATER_VOLUME_SLICE_COUNT; \+\+slice\)' -Message 'Water scattering is not integrated over eight bounded, equal view-ray slices.'
 Require-Match -Text $waterVolume -Pattern '(?s)uint jitterSeed = volumeSeed \^ worldPush\.frameIndex.*?pcg\(jitterSeed\).*?float sampleDistance = \(float\(slice\) \+ sliceJitter\) \* stepLength;' -Message 'Water volume slices are not decorrelated per path and frame, so moving silhouettes cannot converge cleanly.'

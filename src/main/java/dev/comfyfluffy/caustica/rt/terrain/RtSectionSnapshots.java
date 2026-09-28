@@ -189,9 +189,20 @@ final class RtSectionSnapshots {
             return level.getBiomeFabric(pos);
         }
 
-        boolean rainsAt(BlockPos pos) {
+        boolean rainBiomeAt(BlockPos pos) {
             return level.getBiome(pos).value().getPrecipitationAt(pos, level.getSeaLevel())
-                    == Biome.Precipitation.RAIN && level.canSeeSky(pos.above());
+                    == Biome.Precipitation.RAIN;
+        }
+
+        void rainExposureCorners(BlockPos pos, int[] sky, float[] out) {
+            BlockPos.MutableBlockPos sample = new BlockPos.MutableBlockPos();
+            for (int z = 0; z < 3; z++) {
+                for (int x = 0; x < 3; x++) {
+                    sample.set(pos.getX() + x - 1, pos.getY() + 1, pos.getZ() + z - 1);
+                    sky[x + z * 3] = level.canSeeSky(sample) ? 1 : 0;
+                }
+            }
+            RtRainExposure.corners(sky, out);
         }
 
         @Override

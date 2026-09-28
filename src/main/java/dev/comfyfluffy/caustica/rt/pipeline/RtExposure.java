@@ -31,6 +31,12 @@ public final class RtExposure {
         return image != null;
     }
 
+    public void invalidateBindings() {
+        if (pipeline != null) {
+            pipeline.invalidateBindings();
+        }
+    }
+
     public void ensureResources(RtContext ctx) {
         if (image == null) {
             image = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_SFLOAT, "display exposure");

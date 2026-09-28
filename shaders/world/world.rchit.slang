@@ -503,8 +503,13 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             && pr.normal.y > 0.85 && dot(pr.normal.xyz, vdir) > 0.0
             && surface.emission < 0.01 && surface.metalness < 0.5) {
         ConstPtr<WorldPush> weatherPush = ConstPtr<WorldPush>(pc.worldPushAddr);
-        float wet = weatherPush[0].waterTuning.z;
-        float rain = weatherPush[0].weather.x;
+        // Three packed corner samples are interpolated using the hit barycentrics. Neighboring
+        // blocks share corner exposure, so the wet film fades across shelter edges without sky rays.
+        float3 rainExposure = float3(float(pr.aux0 & 255u), float((pr.aux0 >> 8u) & 255u),
+                float((pr.aux0 >> 16u) & 255u)) * (1.0 / 255.0);
+        float exposure = saturate(dot(bary, rainExposure));
+        float wet = weatherPush[0].waterTuning.z * exposure;
+        float rain = weatherPush[0].weather.x * exposure;
         if (wet > 0.001 || rain > 0.02) {
             float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
             float puddle = rainPuddle(hitPos, pr.normal.xyz, wet, rain, weatherPush[0].cloudAnchor.xy);
