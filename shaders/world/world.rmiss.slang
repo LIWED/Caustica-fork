@@ -4,10 +4,12 @@
 // accumulated radiance and bounce-0 denoiser guides.
 //
 // Celestial discs (sun/moon) are gated by a packed payload flag, which raygen sets per-ray from the path
-// state: true on the primary ray and after every specular/dielectric bounce (so the sun/moon show up in
+// realtime state: true on the primary ray and after every specular/dielectric bounce (so the sun/moon show up in
 // water/glass/metal reflections + refractions), false after a diffuse vertex did sun/moon NEE (so the
 // disc isn't double-counted against the direct light → fireflies). The atmosphere gradient + stars are
 // added on every miss (any bounce): stars aren't a NEE light, so they never double-count.
+// Offline raygen sets this flag only on the primary camera ray. On secondary misses it adds the
+// active analytic transport light with MIS itself, separately from this atmosphere/star radiance.
 import world_common;
 
 [[vk::push_constant]] PushAddr pcAddr;

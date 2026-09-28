@@ -19,15 +19,12 @@ $staticLightMathSource = Join-Path $productionRoot 'dev\comfyfluffy\caustica\rt\
 $lightMixtureMathSource = Join-Path $productionRoot 'dev\comfyfluffy\caustica\rt\offline\OfflineLightMixtureMath.java'
 $localLightIndexSource = Join-Path $productionRoot 'dev\comfyfluffy\caustica\rt\offline\OfflineLocalLightIndex.java'
 $sampleSequenceSource = Join-Path $productionRoot 'dev\comfyfluffy\caustica\rt\offline\OfflineSampleSequence.java'
-$outputDir = Join-Path $projectRoot 'build\offline-behavior-test'
+$outputDir = Join-Path ([System.IO.Path]::GetTempPath()) ('caustica-offline-behavior-' + [guid]::NewGuid().ToString('N'))
 
 if (-not (Test-Path -LiteralPath $javac -PathType Leaf)) {
     throw "Java 25 compiler not found: $javac"
 }
 
-if (Test-Path -LiteralPath $outputDir) {
-    Remove-Item -LiteralPath $outputDir -Recurse -Force
-}
 New-Item -ItemType Directory -Path $outputDir | Out-Null
 
 $sources = @($stateSource)
@@ -69,18 +66,19 @@ if ($eligibilityIndex -lt 0 -or $continuationIndex -lt 0 -or $eligibilityIndex -
 
 $emissionMatch = [regex]::Match(
         $raygenText,
-        'if \(emission > 0\.0\) \{(?<body>.*?)L \+= throughput \* albedo \* emission',
+        'if \(emission > 0\.0\) \{(?<body>.*?)L \+= offlineContribution\(throughput \* albedo \* emission',
         [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$emissionBody = if ($emissionMatch.Success) { $emissionMatch.Groups['body'].Value } else { '' }
 $emissionContractValid = $emissionMatch.Success -and
-        $emissionMatch.Groups['body'].Value -match '!previousDelta' -and
-        $emissionMatch.Groups['body'].Value -match 'previousStaticLightNeeEligible'
+        $emissionBody -match '!previousDelta' -and
+        $emissionBody -match 'previousStaticLightNeeEligible'
 if (-not $emissionContractValid) {
     throw 'BSDF-hit reciprocal static-light MIS must require a non-delta path with matching previous-vertex NEE.'
 }
 
 $ordinaryNeeMatch = [regex]::Match(
         $raygenText,
-        'L\s*\+=\s*throughput\s*\*\s*sampleStaticDirect\((?<args>.*?)\);',
+        'L\s*\+=\s*offlineContribution\(throughput\s*\*\s*sampleStaticDirect\((?<args>.*?)\), 8u, bounce, pathFlags\);',
         [System.Text.RegularExpressions.RegexOptions]::Singleline)
 $ordinaryEligibilityMatch = [regex]::Match(
         $raygenText,
@@ -90,6 +88,15 @@ $ordinaryEligibilityValid = $ordinaryNeeMatch.Success -and
         $ordinaryEligibilityMatch.Index -gt $ordinaryNeeMatch.Index
 if (-not $ordinaryEligibilityValid) {
     throw 'Ordinary material continuation must enable reciprocal MIS only after evaluating static-light NEE.'
+}
+
+$reciprocalMisExcludesRealtimeBit =
+        $emissionMatch.Success -and
+        $ordinaryEligibilityMatch.Success -and
+        $emissionBody -notmatch '\b64u\b' -and
+        $ordinaryEligibilityMatch.Value -notmatch '\b64u\b'
+if (-not $reciprocalMisExcludesRealtimeBit) {
+    throw 'Realtime Light-block bit 64 must never participate in reciprocal emissive MIS.'
 }
 
 $glassMatch = [regex]::Match(
@@ -204,7 +211,7 @@ $terrainForwardsDirectoryCount =
         $terrainText -match 'long localDirectoryAddress, int localDirectoryCount' -and
         $terrainText -match 'value\.localDirectoryAddress\(\), value\.localDirectoryCount\(\)'
 $compositeForwardsDirectoryCount =
-        $compositeText -match 'staticLights\.localDirectoryAddress\(\),\s*staticLights\.localReferenceAddress\(\),\s*staticLights\.localDirectoryCount\(\),\s*staticLights\.localReferenceCount\(\)'
+        $compositeText -match 'offlineLights\.localDirectoryAddress\(\),\s*offlineLights\.localReferenceAddress\(\),\s*offlineLights\.localDirectoryCount\(\),\s*offlineLights\.localReferenceCount\(\)'
 $cpuDirectoryCountValid = $snapshotPublishesDirectoryCount -and
         $terrainForwardsDirectoryCount -and
         $compositeForwardsDirectoryCount
@@ -270,7 +277,7 @@ $traceFormatIndex = $ensureOutputBody.IndexOf('int traceFormat = offlineAccumula
 $outputCreateIndex = $ensureOutputBody.IndexOf('output = ctx.createStorageImage', $traceFormatIndex + 1)
 $historyCreateIndex = $ensureOutputBody.IndexOf('offlineHistory = ctx.createStorageImage', $outputCreateIndex + 1)
 $offlinePipelineCreateIndex = $ensureOutputBody.IndexOf('offlinePipeline = RtOfflineAccumulationPipeline.create(ctx)', $historyCreateIndex + 1)
-$offlineSetImagesIndex = $ensureOutputBody.IndexOf('offlinePipeline.setImages(output.view, offlineHistory.view, rrOutput.view)', $offlinePipelineCreateIndex + 1)
+$offlineSetImagesIndex = $ensureOutputBody.IndexOf('offlinePipeline.setImages(output.view, offlineHistory.view, rrOutput.view, offlineMoments.view)', $offlinePipelineCreateIndex + 1)
 $compositeMethodMatch = [regex]::Match(
         $compositeText,
         'public boolean composite\(GpuTexture nativeColor, int width, int height\) \{(?<body>.*?)\r?\n    \}\r?\n\r?\n    private static long offlineRenderSignature',
@@ -454,6 +461,42 @@ $radianceSanitizationValid =
         $raygenText -notmatch 'fireflyClamp|luminanceClamp'
 if (-not $radianceSanitizationValid) {
     throw 'Final radiance must clear negative/NaN/Inf components without a luminance clamp.'
+}
+
+$recordFrameStart = $compositeText.IndexOf('private void recordFrame(')
+$recordFrameEnd = $compositeText.IndexOf('private BreakEntry[] breakingEntries(', $recordFrameStart)
+$recordFrameBody = if ($recordFrameStart -ge 0 -and $recordFrameEnd -gt $recordFrameStart) {
+    $compositeText.Substring($recordFrameStart, $recordFrameEnd - $recordFrameStart)
+} else {
+    ''
+}
+$offlineSnapshotMatch = [regex]::Match(
+        $recordFrameBody,
+        'RtTerrain\.StaticLightSnapshot offlineLights\s*=\s*terrain\.staticLights\(ctx, offlineAccumulating\);')
+$offlineSnapshotIndex = if ($offlineSnapshotMatch.Success) { $offlineSnapshotMatch.Index } else { -1 }
+$realtimeSnapshotIndex = $recordFrameBody.IndexOf(
+        'RtTerrain.RealtimeLightBlockSnapshot realtimeLights =')
+$realtimeRequiredIndex = $recordFrameBody.IndexOf(
+        'terrain.realtimeLightBlocks(ctx, !offlineAccumulating);',
+        [Math]::Max(0, $realtimeSnapshotIndex))
+$offlineFlagIndex = $recordFrameBody.IndexOf('flags |= FLAG_OFFLINE_STATIC_LIGHT_NEE;')
+$realtimeFlagIndex = $recordFrameBody.IndexOf('flags |= FLAG_REALTIME_LIGHT_BLOCK_NEE;')
+$offlineOnlyWhileAccumulating =
+        0 -le $offlineSnapshotIndex -and
+        $offlineSnapshotIndex -lt $realtimeSnapshotIndex -and
+        $realtimeSnapshotIndex -lt $realtimeRequiredIndex -and
+        $recordFrameBody -match '(?s)if \(offlineAccumulating\s*&&.*?offlineLights\.revision\(\)\s*==\s*terrain\.sceneRevision\(\).*?\) \{\s*flags \|= FLAG_OFFLINE_STATIC_LIGHT_NEE;' -and
+        $recordFrameBody -match '(?s)if \(!offlineAccumulating\s*&&.*?realtimeLights\.revision\(\)\s*==\s*terrain\.realtimeLightBlockRevision\(\).*?\) \{\s*flags \|= FLAG_REALTIME_LIGHT_BLOCK_NEE;' -and
+        0 -le $offlineFlagIndex -and 0 -le $realtimeFlagIndex
+if (-not $offlineOnlyWhileAccumulating) {
+    throw 'Offline frames must build/enable only the full static-light table; realtime, movement, and waiting frames must build/enable only the realtime Light-block table.'
+}
+
+$mutuallyExclusiveFlags =
+        $recordFrameBody -match '\(flags & FLAG_OFFLINE_STATIC_LIGHT_NEE\) != 0\s*&&\s*\(flags & FLAG_REALTIME_LIGHT_BLOCK_NEE\) != 0' -and
+        $recordFrameBody -match 'throw new IllegalStateException\("Offline and realtime Light NEE flags are mutually exclusive"\);'
+if (-not $mutuallyExclusiveFlags) {
+    throw 'Offline full-static and realtime Light-block NEE flags must be mutually exclusive at the frame boundary.'
 }
 
 Write-Output 'Offline FP32 trace, shader variant, sample ABI, and per-SPP contracts: PASS'

@@ -1,0 +1,156 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(binding = 0, rgba32f) uniform readonly image2D inputImage;
+layout(binding = 1, rgba32f) uniform writeonly image2D outputImage;
+layout(binding = 2, rgba16f) uniform writeonly image2D resolvedImage;
+layout(binding = 3, rgba16f) uniform readonly image2D normalImage;
+layout(binding = 4, rgba16f) uniform readonly image2D albedoImage;
+layout(binding = 5, r32f) uniform readonly image2D depthImage;
+layout(binding = 6, rgba16f) uniform readonly image2D specularImage;
+layout(binding = 7, rgba32f) uniform readonly image2D momentImage;
+layout(binding = 8, rgba32f) uniform readonly image2D rawImage;
+
+layout(push_constant) uniform Push {
+    int stage;
+    int stepWidth;
+    int finalPass;
+    int totalSamples;
+} pc;
+
+// Display reconstruction only. Raw FP32 accumulation is never an output binding.
+bool inside(ivec2 p) {
+    ivec2 size = imageSize(inputImage);
+    return p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y;
+}
+
+vec3 loadColor(ivec2 p) {
+    return max(imageLoad(inputImage, p).rgb, vec3(0.0));
+}
+
+float brightness(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float guideWeight(ivec2 p, ivec2 q) {
+    vec3 n = imageLoad(normalImage, p).xyz;
+    vec3 nq = imageLoad(normalImage, q).xyz;
+    float nn = dot(n, n);
+    float nqnq = dot(nq, nq);
+    if ((nn > 0.25) != (nqnq > 0.25)) return 0.0;
+    float normalWeight = 1.0;
+    if (nn > 0.25) {
+        float cosine = dot(n, nq) / sqrt(nn * nqnq);
+        if (cosine < 0.9) return 0.0;
+        normalWeight = exp(-32.0 * max(0.0, 1.0 - cosine));
+    }
+    // Guides contain hardware reversed-Z, not linear world-space depth.
+    float depth = imageLoad(depthImage, p).x;
+    float otherDepth = imageLoad(depthImage, q).x;
+    float distance = max(float(abs(p.x - q.x)), float(abs(p.y - q.y)));
+    float depthScale = max(0.000001, max(abs(depth), abs(otherDepth)) * 0.025 * max(1.0, distance));
+    float depthDifference = abs(depth - otherDepth) / depthScale;
+    if (depthDifference > 1.0) return 0.0;
+    // Include specular color: metals have zero diffuse guides.
+    vec3 material = clamp(imageLoad(albedoImage, p).rgb + imageLoad(specularImage, p).rgb, 0.0, 1.0);
+    vec3 otherMaterial = clamp(imageLoad(albedoImage, q).rgb + imageLoad(specularImage, q).rgb, 0.0, 1.0);
+    vec3 difference = material - otherMaterial;
+    float materialDifference = dot(difference, difference);
+    if (materialDifference > 0.16) return 0.0;
+    return normalWeight * exp(-depthDifference * depthDifference - 20.0 * materialDifference);
+}
+
+// Statistics describe the untouched raw mean, including after peak prefiltering.
+vec3 meanVariance(ivec2 pixel) {
+    vec4 moments = imageLoad(momentImage, pixel);
+    if (moments.w < 32.0 || pc.totalSamples < 32) return vec3(0.0);
+    return max(moments.rgb, vec3(0.0)) / ((moments.w - 1.0) * float(pc.totalSamples));
+}
+
+float rgbVariance(vec3 v) {
+    return (v.x + v.y + v.z) / 3.0;
+}
+
+vec3 rejectIsolatedPeak(ivec2 pixel) {
+    vec3 center = loadColor(pixel);
+    vec3 variance = meanVariance(pixel);
+    if (!(rgbVariance(variance) > 0.0)) return center;
+    float values[24];
+    int count = 0;
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            if (x == 0 && y == 0) continue;
+            ivec2 q = pixel + ivec2(x, y);
+            if (!inside(q) || guideWeight(pixel, q) < 0.2) continue;
+            float value = brightness(loadColor(q));
+            int j = count;
+            while (j > 0 && values[j - 1] > value) {
+                values[j] = values[j - 1];
+                j--;
+            }
+            values[j] = value;
+            count++;
+        }
+    }
+    if (count < 8) return center;
+    float median = values[count / 2];
+    float upper = values[(3 * count) / 4];
+    float spread = max(0.0, upper - median);
+    float lum = brightness(center);
+    float threshold = max(0.0001, max(upper * 4.0, median + 8.0 * spread));
+    // Conservative bound includes possible RGB covariance, notably gray noise.
+    float deviation = 0.2126 * sqrt(variance.x) + 0.7152 * sqrt(variance.y) + 0.0722 * sqrt(variance.z);
+    if (lum <= threshold || deviation < 0.5 * (lum - upper)) return center;
+    float replacement = max(median, upper + 2.0 * spread);
+    return center * (replacement / max(lum, 0.000001));
+}
+
+vec3 smoothGrain(ivec2 pixel) {
+    vec3 center = loadColor(pixel);
+    vec3 variance = meanVariance(pixel);
+    float noise = rgbVariance(variance);
+    // A stable center must survive even when its neighbors remain noisy.
+    if (!(noise > 0.0)) return center;
+    vec3 sum = center;
+    float weightSum = 1.0;
+    vec3 localMean = imageLoad(rawImage, pixel).rgb;
+    vec3 localM2 = vec3(0.0);
+    float localWeight = 1.0;
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            if (x == 0 && y == 0) continue;
+            ivec2 q = pixel + ivec2(x, y);
+            if (!inside(q)) continue;
+            float guide = guideWeight(pixel, q) * exp(-0.5 * float(x * x + y * y));
+            if (guide <= 0.0) continue;
+            // Measure contrast from raw history, never the already clipped scratch image.
+            vec3 rawNeighbor = imageLoad(rawImage, q).rgb;
+            vec3 delta = rawNeighbor - localMean;
+            float nextWeight = localWeight + guide;
+            localMean += delta * (guide / nextWeight);
+            localM2 += guide * delta * (rawNeighbor - localMean);
+            localWeight = nextWeight;
+            vec3 neighbor = loadColor(q);
+            vec3 difference = center - neighbor;
+            float noiseScale = max(0.000000000001, noise + rgbVariance(meanVariance(q)));
+            float colorWeight = exp(-rgbVariance(difference * difference) / (2.0 * noiseScale));
+            float weight = guide * colorWeight;
+            sum += neighbor * weight;
+            weightSum += weight;
+        }
+    }
+    float observedVariance = max(0.0, rgbVariance(localM2 / localWeight));
+    float strength = clamp(noise / max(observedVariance, 0.000000000001), 0.0, 1.0);
+    return center + (sum / weightSum - center) * strength;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (!inside(pixel)) return;
+    vec3 result = pc.stage == 0 ? rejectIsolatedPeak(pixel) : smoothGrain(pixel);
+    if (pc.finalPass != 0) {
+        imageStore(resolvedImage, pixel, vec4(result, 1.0));
+    } else {
+        imageStore(outputImage, pixel, vec4(result, 1.0));
+    }
+}

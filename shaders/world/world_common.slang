@@ -34,6 +34,9 @@ public struct WorldPush {
     public uint64_t staticLightAddr;  // weighted offline static-light records
     public uint     staticLightCount;
     public float    staticLightTotalWeight;
+    public uint64_t realtimeLightBlockAddr;
+    public uint     realtimeLightBlockCount;
+    public float    realtimeLightBlockTotalWeight;
     public uint64_t localDirectoryAddr;
     public uint64_t localReferenceAddr;
     public uint     localDirectoryCount;
@@ -46,11 +49,11 @@ public struct WorldPush {
     public uint64_t offlineSampleBase;
     public float2   jitter;
     public uint64_t entityTableAddr;  // entity geometry table
-    public uint     flags;            // bit0 camera submerged, bit1 PBR BRDF, bit4 water waves
+    public uint     flags;            // bit0 submerged, bit1 PBR, bit4 waves, bit5 offline NEE, bit6 realtime Light NEE, bits7-8 offline regularization
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
-    public float4   lightRadiance;    // xyz HDR light radiance, w star brightness
+    public float4   lightRadiance;    // xyz integrated angular celestial strength (offline Le = xyz * direction PDF), w stars
     public float4   moonDir;          // xyz moon direction, w moonPhase (0 full .. 4 new)
     public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
@@ -60,6 +63,8 @@ public struct WorldPush {
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
     public BreakEntry breaking[8];    // Java capacity and breakCount serialization are generated from this
+    public uint64_t pathProbeAddr;
+    public float pathProbeThreshold;
 };
 
 // Radiance-ray payload (location 0). Member order and types are a cross-stage ABI.
@@ -69,7 +74,7 @@ public struct Payload {
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public float3 motionPrev;  // per-vertex world displacement since last frame.
     public float3 f0;          // specular F0.
-    public uint   flags;       // bits 0..1 material, bit 2 show celestial disc on miss, bit 3 water-entering (hit only).
+    public uint   flags;       // bits 0..1 material, bit 2 celestial miss, bit 3 water-entering hit, bit 4 offline glass LOD0 (trace-only).
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   rayCone;     // packHalf2x16(width, spread)
@@ -78,6 +83,8 @@ public struct Payload {
 };
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
+// Set only by offline raygen before tracing; closest-hit caches it before writing material flags.
+public static const uint PAYLOAD_OFFLINE_GLASS_LOD0 = 16u;
 // Set by world.rchit on a MATERIAL_WATER hit: true when the incoming ray travels against the prim's
 // outward face normal (entering the water volume), false when it exits (water -> air). Bit 2
 // (PAYLOAD_SHOW_CELESTIAL) is only meaningful on a miss and this bit only on a hit, so they never need
@@ -113,6 +120,14 @@ public struct StaticLight {
     public float4 tint_hasS;
     public float4 pointData;
     public float4 reserved;
+};
+
+// Realtime minecraft:light point source (32 B). Position is relative to the terrain base; the two W
+// lanes carry the cumulative and individual selection weights of the source CDF.
+public struct RealtimeLightBlock
+{
+    public float4 positionCdf;
+    public float4 radianceWeight;
 };
 
 // Per-terrain-slot local static-light CDF directory (16 B, std430).

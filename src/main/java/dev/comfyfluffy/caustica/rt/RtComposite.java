@@ -58,15 +58,18 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineAccumulationPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineDenoisePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.offline.OfflineAccumulationState;
 import dev.comfyfluffy.caustica.rt.offline.OfflineRenderSignature;
+import dev.comfyfluffy.caustica.rt.offline.OfflineRegularizationPolicy;
 import dev.comfyfluffy.caustica.rt.offline.PathBouncePolicy;
 import dev.comfyfluffy.caustica.rt.offline.RtOfflineController;
+import dev.comfyfluffy.caustica.rt.offline.RtOfflinePathProbe;
+import dev.comfyfluffy.caustica.rt.offline.OfflinePathProbeCodec;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
-import dev.comfyfluffy.caustica.rt.terrain.RtTerrain.StaticLightSnapshot;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
@@ -103,6 +106,8 @@ public final class RtComposite {
     // RtTerrain's deferred-free horizon. The frame TLAS is built + traced this frame, then freed once
     // the composite frame counter has advanced this far past it (so no in-flight frame still reads it).
     private static final int KEEP_FRAMES = 4;
+    private static final int FLAG_OFFLINE_STATIC_LIGHT_NEE = 1 << 5;
+    private static final int FLAG_REALTIME_LIGHT_BLOCK_NEE = 1 << 6;
 
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
@@ -191,6 +196,9 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtOfflineAccumulationPipeline offlinePipeline;
+    private RtOfflineDenoisePipeline offlineDenoisePipeline;
+    private RtImage offlineDenoiseA;
+    private RtImage offlineMoments;
     private RtImage output;
     private RtImage offlineHistory;
     private RtImage displayImage;
@@ -306,6 +314,7 @@ public final class RtComposite {
     // feature's reliance on in-order queue execution for this frame's world content.
     private volatile long currentTlasHandle;
     private long pendingTerrainGraphicsUse;
+    private final RtOfflinePathProbe pathProbe = new RtOfflinePathProbe();
 
     private RtComposite() {
     }
@@ -389,6 +398,7 @@ public final class RtComposite {
         var encoder = (VulkanCommandEncoder) ((CommandEncoderAccessor) RenderSystem.getDevice()
                 .createCommandEncoder()).caustica$getBackend();
         ctx.gpuExecutor().endGraphicsTerrainUse(encoder, graphicsUse);
+        pathProbe.signalAttached(graphicsUse);
         pendingTerrainGraphicsUse = 0L;
     }
 
@@ -407,6 +417,7 @@ public final class RtComposite {
             return false;
         }
         ctx.gpuExecutor().throwIfFailed();
+        pathProbe.poll(ctx);
         // Count-bounded terrain streaming (dispatch/drain/build kick) runs here once per render frame — before
         // the ready gate below, because it is what MAKES terrain ready during the initial fill.
         try {
@@ -477,6 +488,7 @@ public final class RtComposite {
 
     private static long offlineRenderSignature(int width, int height, RtTerrain terrain) {
         int featureFlags = 0;
+        featureFlags |= OfflineRegularizationPolicy.flags(CausticaConfig.Rt.Offline.REGULARIZATION.value(), true);
         if (CausticaConfig.Rt.Entities.ENABLED.value()) {
             featureFlags |= 1;
         }
@@ -773,8 +785,21 @@ public final class RtComposite {
         if (offlineAccumulating) {
             offlineHistory = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
                     "offline accumulation " + width + "x" + height);
+            offlineMoments = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                    "offline sample moments");
             offlinePipeline = RtOfflineAccumulationPipeline.create(ctx);
-            offlinePipeline.setImages(output.view, offlineHistory.view, rrOutput.view);
+            offlinePipeline.setImages(output.view, offlineHistory.view, rrOutput.view, offlineMoments.view);
+            try {
+                offlineDenoiseA = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                        "offline denoise scratch A");
+                offlineDenoisePipeline = RtOfflineDenoisePipeline.create(ctx, offlineHistory.view,
+                        offlineDenoiseA.view, offlineMoments.view, rrOutput.view,
+                        gNormal.view, gAlbedo.view, gDepth.view, gSpecAlbedo.view);
+            } catch (RuntimeException failure) {
+                if (offlineDenoiseA != null) offlineDenoiseA.destroy();
+                offlineDenoiseA = null;
+                CausticaMod.LOGGER.warn("Offline denoiser unavailable; retaining raw accumulation", failure);
+            }
         }
         exposure.ensureResources(ctx);
 
@@ -787,6 +812,18 @@ public final class RtComposite {
     }
 
     private void destroyOfflineResources() {
+        if (offlineDenoisePipeline != null) {
+            offlineDenoisePipeline.destroy();
+            offlineDenoisePipeline = null;
+        }
+        if (offlineDenoiseA != null) {
+            offlineDenoiseA.destroy();
+            offlineDenoiseA = null;
+        }
+        if (offlineMoments != null) {
+            offlineMoments.destroy();
+            offlineMoments = null;
+        }
         if (offlinePipeline != null) {
             offlinePipeline.destroy();
             offlinePipeline = null;
@@ -835,7 +872,8 @@ public final class RtComposite {
             // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
             // Jitter is suppressed for the no-RR reference and for the debug guide views (raw inspection).
             int debugView = debugView();
-            boolean rrPath = RtDlssRr.enabled() && debugView == 0;
+            boolean radianceView = debugView == 0 || debugView >= 8;
+            boolean rrPath = RtDlssRr.enabled() && radianceView;
             boolean offlineAccumulating = offlineDecision != null && offlineDecision.accumulate();
             int effectiveMaxBounces = PathBouncePolicy.effective(
                     offlineAccumulating, realtimeMaxBounces(), offlineMaxBounces());
@@ -849,7 +887,7 @@ public final class RtComposite {
             }
             float jitterX = 0f;
             float jitterY = 0f;
-            if (rrPath || (offlineAccumulating && debugView == 0)) {
+            if (rrPath || (offlineAccumulating && radianceView)) {
                 CausticaJitter.INSTANCE.prepare(renderW, renderH, displayW);
                 jitterX = CausticaJitter.INSTANCE.jitterPixelsX() * jitterSignX();
                 jitterY = CausticaJitter.INSTANCE.jitterPixelsY() * jitterSignY();
@@ -858,7 +896,10 @@ public final class RtComposite {
             boolean rrDone = false;
             boolean offlineDone = false;
             RtTerrain terrain = RtTerrain.currentOrNull();
-            StaticLightSnapshot staticLights = terrain.staticLights(ctx, offlineAccumulating);
+            RtTerrain.StaticLightSnapshot offlineLights =
+                    terrain.staticLights(ctx, offlineAccumulating);
+            RtTerrain.RealtimeLightBlockSnapshot realtimeLights =
+                    terrain.realtimeLightBlocks(ctx, !offlineAccumulating);
             // Select the next BDA ring slot; the generated WorldPushData serializer fills it once all
             // frame-derived values (including entity addresses and block-breaking entries) are known.
             pushSlot = (pushSlot + 1) % PUSH_RING;
@@ -868,6 +909,7 @@ public final class RtComposite {
             // flags: PBR BRDF (bit 1, always on) + camera-in-water (so the path tracer starts in the water
             // medium when the eye is submerged, fixing the air→water first-segment orientation).
             int flags = 0b10;
+            flags |= OfflineRegularizationPolicy.flags(CausticaConfig.Rt.Offline.REGULARIZATION.value(), offlineAccumulating);
             var level = Minecraft.getInstance().level;
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
@@ -883,9 +925,25 @@ public final class RtComposite {
             if (waterWaves()) {
                 flags |= 0b10000; // W1: animated water wave normals
             }
-            if (offlineAccumulating && staticLights.count() > 0
-                    && staticLights.revision() == terrain.sceneRevision()) {
-                flags |= 0b100000; // offline static-light sampling
+            if (offlineAccumulating
+                    && offlineLights.revision() == terrain.sceneRevision()
+                    && offlineLights.address() != 0L
+                    && offlineLights.count() > 0
+                    && Float.isFinite(offlineLights.totalWeight())
+                    && offlineLights.totalWeight() > 0.0f) {
+                flags |= FLAG_OFFLINE_STATIC_LIGHT_NEE;
+            }
+            if (!offlineAccumulating
+                    && realtimeLights.revision() == terrain.realtimeLightBlockRevision()
+                    && realtimeLights.address() != 0L
+                    && realtimeLights.count() > 0
+                    && Float.isFinite(realtimeLights.totalWeight())
+                    && realtimeLights.totalWeight() > 0.0f) {
+                flags |= FLAG_REALTIME_LIGHT_BLOCK_NEE;
+            }
+            if ((flags & FLAG_OFFLINE_STATIC_LIGHT_NEE) != 0
+                    && (flags & FLAG_REALTIME_LIGHT_BLOCK_NEE) != 0) {
+                throw new IllegalStateException("Offline and realtime Light NEE flags are mutually exclusive");
             }
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
@@ -931,18 +989,36 @@ public final class RtComposite {
                     offlineSkyCaptured = true;
                 }
             }
+            long probeAddress = pathProbe.begin(ctx, offlineAccumulating,
+                    offlineDecision == null ? 0L : offlineDecision.previousSamples(),
+                    "\"frame\":" + frameCounter + ",\"debugView\":" + debugView
+                            + ",\"sampleBase\":\"" + (offlineDecision == null ? 0L : offlineDecision.previousSamples())
+                            + "\",\"dimensions\":[" + renderW + "," + renderH + "]"
+                            + ",\"camera\":[" + OfflinePathProbeCodec.number(camX) + ","
+                            + OfflinePathProbeCodec.number(camY) + "," + OfflinePathProbeCodec.number(camZ) + "]"
+                            + ",\"terrainOrigin\":[" + terrain.blockX + "," + terrain.blockY + "," + terrain.blockZ + "]"
+                            + ",\"lightDir\":" + probeVector(sky.lightDir())
+                            + ",\"lightRadiance\":" + probeVector(sky.lightRadiance())
+                            + ",\"celestial\":" + probeVector(sky.celestial())
+                            + ",\"waterParams\":" + probeVector(waterParams)
+                            + ",\"waterAnchor\":" + probeVector(waterAnchor)
+                            + ",\"flags\":" + flags
+                            + ",\"maxBounces\":" + effectiveMaxBounces);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
                             (float) (camZ - terrain.blockZ)),
                     terrain.tableAddress(),
-                    staticLights.address(),
-                    staticLights.count(),
-                    staticLights.totalWeight(),
-                    staticLights.localDirectoryAddress(),
-                    staticLights.localReferenceAddress(),
-                    staticLights.localDirectoryCount(),
-                    staticLights.localReferenceCount(),
+                    offlineLights.address(),
+                    offlineLights.count(),
+                    offlineLights.totalWeight(),
+                    realtimeLights.address(),
+                    realtimeLights.count(),
+                    realtimeLights.totalWeight(),
+                    offlineLights.localDirectoryAddress(),
+                    offlineLights.localReferenceAddress(),
+                    offlineLights.localDirectoryCount(),
+                    offlineLights.localReferenceCount(),
                     debugView,
                     (int) frameCounter,
                     mvPushMatrix,
@@ -964,7 +1040,9 @@ public final class RtComposite {
                     waterAnchor,
                     mvCurProjView,
                     breaking.length,
-                    breaking
+                    breaking,
+                    probeAddress,
+                    RtOfflinePathProbe.THRESHOLD
             ).write(push);
             // Upload any entity textures registered this frame into the bindless set before the trace.
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
@@ -1002,6 +1080,7 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.trace")) {
                 active.trace(cmd, renderW, renderH, pushAddr);
             }
+            pathProbe.afterTrace(cmd, stack, probeAddress);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
             if (offlineAccumulating && offlinePipeline != null && offlineHistory != null) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "offline accumulate");
@@ -1050,6 +1129,19 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
+            // Display-only reconstruction: exposure meters the raw accumulated result above.
+            // The next frame still accumulates into untouched FP32 history. Toggling the filter
+            // does not change the render signature, allowing immediate same-history comparison.
+            if (offlineDone && debugView == 0 && CausticaConfig.Rt.Offline.DENOISE.value()
+                    && offlineDenoisePipeline != null) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "offline denoise");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.offlineDenoise")) {
+                    offlineDenoisePipeline.dispatch(cmd, displayW, displayH,
+                            offlineDecision.previousSamples(), offlineDecision.currentSamples(),
+                            offlineDecision.resetHistory());
+                }
+            }
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
@@ -1072,6 +1164,12 @@ public final class RtComposite {
         long graphicsUse = gpuExecutor.beginGraphicsTerrainUse(encoder);
         encoder.execute(cmd); // deferred into the frame's submission — correct for per-frame work
         pendingTerrainGraphicsUse = graphicsUse;
+        pathProbe.submitted(graphicsUse);
+    }
+
+    private static String probeVector(Float4 v) {
+        return "[" + OfflinePathProbeCodec.number(v.x()) + "," + OfflinePathProbeCodec.number(v.y())
+                + "," + OfflinePathProbeCodec.number(v.z()) + "," + OfflinePathProbeCodec.number(v.w()) + "]";
     }
 
     /**
@@ -1269,6 +1367,7 @@ public final class RtComposite {
     public void destroy() {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
+        pathProbe.destroyAfterDeviceIdle();
         tlasRing.destroy();
         // Offline mode suppresses RtDlssRr.enabled(), but a feature created before entering Offline
         // Rendering still has to be released at device teardown.

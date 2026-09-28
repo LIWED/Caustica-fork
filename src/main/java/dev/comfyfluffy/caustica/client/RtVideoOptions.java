@@ -42,6 +42,8 @@ public final class RtVideoOptions {
             particles(),
             waterWaves(),
             offlineRendering(),
+            offlineRegularization(),
+            offlineDenoise(),
             dlssQuality(),
             frameGeneration(),
             hdrEnabled(),
@@ -143,6 +145,21 @@ public final class RtVideoOptions {
         return bool("caustica.options.rt.offlineRendering", CausticaConfig.Rt.Offline.ENABLED);
     }
 
+    private static OptionInstance<Integer> offlineRegularization() {
+        IntSetting setting = CausticaConfig.Rt.Offline.REGULARIZATION;
+        return new OptionInstance<>(
+            "caustica.options.rt.offlineRegularization",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "caustica.options.rt.offlineRegularization.tooltip")),
+            (caption, value) -> Component.translatable("caustica.options.rt.offlineRegularization." + value),
+            new OptionInstance.Enum<>(List.of(0, 1, 2), Codec.INT),
+            setting.value(), setting::set);
+    }
+
+    private static OptionInstance<Boolean> offlineDenoise() {
+        return bool("caustica.options.rt.offlineDenoise", CausticaConfig.Rt.Offline.DENOISE);
+    }
+
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR
     // programming guide, Ray Reconstruction only supports Performance(0), Balanced(1), Quality(2),
     // Ultra-Performance(3), and DLAA(5) — Ultra Quality(4) is not a valid PerfQualityValue for RR (its
@@ -201,8 +218,8 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7), Codec.INT),
-            Math.clamp(setting.value(), 0, 7),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21), Codec.INT),
+            Math.clamp(setting.value(), 0, 21),
             setting::set);
     }
 

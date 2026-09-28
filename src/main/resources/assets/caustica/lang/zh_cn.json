@@ -1,4 +1,11 @@
 {
+	"caustica.options.rt.offlineDenoise": "离线自适应降噪（实验）",
+	"caustica.options.rt.offlineDenoise.tooltip": "默认关闭。根据实际样本波动处理不稳定亮点和颗粒，保留已稳定的细节；至少累积32帧后生效。罕见高光仍可能被误判。开关不清空样本，可即时对照原始累积。仅作用于源画面；不继承0.3.16的旧降噪开关。",
+	"caustica.options.rt.offlineRegularization": "离线间接反射平滑",
+	"caustica.options.rt.offlineRegularization.tooltip": "实验选项，仅在离线累积时生效。降低部分间接反射的颗粒，保持眼前材质的原始粗糙度，但可能改变间接高光、焦散和亮度。水和玻璃本身不受此项调整。切换后重新累积；关闭可对照原始结果。",
+	"caustica.options.rt.offlineRegularization.0": "关闭（原始）",
+	"caustica.options.rt.offlineRegularization.1": "轻度（实验）",
+	"caustica.options.rt.offlineRegularization.2": "较强（实验）",
 	"caustica.options.rt.offlineRendering": "离线渲染",
 	"caustica.options.rt.offlineRendering.tooltip": "视角静止后冻结单人游戏刻，并在原生分辨率下逐步累积路径追踪结果。期间暂时绕过 DLSS 光线重建和帧生成。多人服务器需要执行 /tick freeze。移动视角会重置累积样本。",
 	"caustica.offline.holdStill": "离线渲染：请保持视角静止",
@@ -60,7 +67,7 @@
 	"caustica.options.rt.frameGeneration.tooltip": "在两个渲染帧之间插入一个生成帧（2 倍帧生成）。需要受支持的 NVIDIA RTX 显卡和驱动。更高倍数目前不稳定，因此不会显示。不能与离线渲染同时使用。",
 
 	"caustica.options.rt.debugView": "调试视图",
-	"caustica.options.rt.debugView.tooltip": "显示光线追踪的中间缓冲区，而不是最终图像。",
+	"caustica.options.rt.debugView.tooltip": "视图 1-7 显示引导缓冲区。离线贡献视图 8-21 仅在积累时生效，移动时显示正常画面；比较时需固定手动曝光。视图 8-11 包含所有路径深度；视图 12 仅按 bounce > 0 筛选，不是完整的物理间接光分解。",
 	"caustica.options.rt.debugView.0": "关闭",
 	"caustica.options.rt.debugView.1": "法线",
 	"caustica.options.rt.debugView.2": "反照率",
@@ -68,5 +75,19 @@
 	"caustica.options.rt.debugView.4": "粗糙度",
 	"caustica.options.rt.debugView.5": "运动",
 	"caustica.options.rt.debugView.6": "高光",
-	"caustica.options.rt.debugView.7": "高光运动"
+	"caustica.options.rt.debugView.7": "高光运动",
+	"caustica.options.rt.debugView.8": "离线：方块直接光（NEE）",
+	"caustica.options.rt.debugView.9": "离线：发光表面命中",
+	"caustica.options.rt.debugView.10": "离线：天体直接光及 SSS",
+	"caustica.options.rt.debugView.11": "离线：天空命中（含日月盘）",
+	"caustica.options.rt.debugView.12": "离线：间接路径（bounce > 0）",
+	"caustica.options.rt.debugView.13": "离线：基础天空",
+	"caustica.options.rt.debugView.14": "离线：解析天体命中",
+	"caustica.options.rt.debugView.15": "离线：天体路径曾穿过玻璃",
+	"caustica.options.rt.debugView.16": "离线：天体路径曾反射于玻璃",
+	"caustica.options.rt.debugView.17": "离线：天体路径曾折射于水",
+	"caustica.options.rt.debugView.18": "离线：天体路径曾反射于水",
+	"caustica.options.rt.debugView.19": "离线：最后一跳天体直接光及 SSS",
+	"caustica.options.rt.debugView.20": "离线：水天体光（末段受保护）",
+	"caustica.options.rt.debugView.21": "离线：水天体光（末段未受保护）"
 }

@@ -1,107 +1,177 @@
-# Bug 记录
+# Bug Record
 
-## 已解决
+## Resolved in code
 
-### 离线累积在 2 SPP 后反复返回“保持静止”
+### Fixed offline filter erased stable fine detail
 
-- 现象：视角静止两秒后只积累一个 2 SPP 帧，随后回到等待静止状态并不断循环。
-- 原因：FP16/FP32 世界管线重建会无条件重置并准备 LabPBR 材质图集，再调用 `RtTerrain.markAllDirty()`；这次内部地形重新发布改变了 `sceneRevision`，离线渲染签名因此失效并清空历史。
-- 解决：绑定世界材质前判断方块图集来源是否变化。来源未变且现有 `_s`、`_n` 视图有效时直接复用；仅首次初始化、来源图集变化或视图缺失时重建材质并重新提取地形。
-- 保护：真实地形、光源和资源包变化仍会更新 `sceneRevision`，继续清空不兼容的离线累积。
-- 验证边界：自动测试与构建完成后仍需在 `caustica_test` 中确认 SPP 不再循环重置。
+- 0.3.16 user acceptance failed. Fixed multiscale smoothing lacked temporal uncertainty; same-surface reflection detail is invisible to first-hit guides. A noise-free checker retained only0.371211 contrast.
+- 0.3.17 removes unconditional multiscale smoothing, adds separate weighted sample moments and local adaptive reconstruction, and defaults Off under a new key. Stable/unknown pixels pass through. Tests now include fine low-contrast reflections and genuine point highlights; CPU improvement is not GPU acceptance.
+- Moment finiteness must be checked before max/clamp and on reset; NaN/Inf/overflow negative cases previously bypassed validity. Corrected without changing the raw mean expression.
 
-### 高 SPP 仍保留稳定磨砂纹理与异常亮点
+### Ordinary-lobe sampling ignored the offline diffuse energy budget
 
-- 原因：帧内 SPP 共用一条主射线、跨帧复用有限抖动相位，且辐射值先写入 FP16 再进入 FP32 历史。
-- 解决：每 SPP 使用全局编号的独立低差异主射线，离线 trace/history 改为 RGBA32F，并清除负值与非有限值。
+- GPU0.3.14 room records contain repeated high-F0 ordinary surfaces with near-half reflection selection and path weights up to26.174. The old sampler/PDF agree, but unnecessarily large single-step compensation can amplify variance.
+- 0.3.15 allocates offline samples from conservative per-lobe weight bounds and shares the probability with the PDF/guided posterior.45RGB cases and old-proposal negative control pass; BRDF and smoothing strength are unchanged.
+- This corrects a demonstrated efficiency limitation, not all fireflies. Fixed-material mean tests do not cover lobe-conditioned downstream texture LOD; GPU convergence remains open. See `docs/OFFLINE_LOBE_SAMPLING_2026-09-20.md`.
 
-### 高样本编号的主射线相位塌缩
+### Diagnostic capture missed ordinary lighting and later scenes
 
-- 原因：GPU 曾先把 64 位样本编号转换为 float；在 `2^24` 附近相邻编号可能得到相同位置。
-- 解决：CPU/GPU 统一使用模 `2^64` 定点 Weyl 相位，只转换高 24 位；边界测试覆盖 `2^24`、`2^32` 和 Java 正长整型上界附近。
+- Before0.3.13 only water-related celestial paths qualified and256 records exhausted the renderer capture quota. The0.3.12 file ended before the reflective-room screenshot and cannot explain that scene.
+- 0.3.13 captures computed direct lighting and secondary emitter/sky/celestial events at threshold32; rearm on accumulation reset and tag generations. Per-run/lifetime/byte caps remain bounded. Stale reads retain GPU ownership but cannot charge the new run; budget and observer/replay tests pass.
 
-### 局部光源概率与 reciprocal MIS 不一致
+### Water-side incidence could use air-side IOR after an origin offset
 
-- 原因：全局光源 CDF 会被远处光源稀释，且局部选择必须在 NEE 与 BSDF 命中时使用相同 PDF。
-- 解决：加入半径 2 section 的局部目录，以局部 90% / 全局 10% 混合，并统一选择概率计算。
+- 0.3.10 GPU evidence:123 pool-top backface hits carry historical air state. The old air/water ratio reproduces their escape directions; all require TIR with the correct water/air ratio.122 preceding shading-normal offsets cross the local water plane.
+- Resolution in0.3.11: derive incident state from the outward-interface entering flag before radiance/guide IOR selection, retaining corrected state on reflection. Captured-case and three-consumer negative controls pass.
+- Root geometric-offset correction and recovery of skipped prior interface/absorption remain open; this repair only reconciles the current interface and its continuation.
 
-### 粒子命中发光面时被错误降权
+### Generated water-guide samples could lose their own PDF at the proposal boundary
 
-- 原因：粒子顶点没有执行对应静态光源 NEE，却应用了 reciprocal MIS。
-- 解决：记录上一顶点是否具备配对 NEE；粒子延续路径不再应用无配对的 reciprocal MIS。
+- GPU evidence: all171 protected high-value records lie at the guide boundary; replay matches original source. FP32 inverse Snell/support testing sometimes returns zero for a direction the guide just generated, leaving only the small BSDF component in the denominator.
+- Resolution in0.3.10: preserve generated air-direction density times the forward Snell Jacobian, then form the full mixture. No radiance clamp or new random draw.40000 boundary cases pass and old inverse-evaluation negative control fails.
+- This concerns the proposal boundary itself; the earlier wider-proposal fix only guarded the emitter boundary. Actual tilted interfaces can direct the problematic proposal-edge rays into the sun.
 
-### cutout 发光面权重过高
+### LabPBR linear roughness was squared a second time
 
-- 原因：CPU 权重只使用几何面积和发光强度，透明像素也参与采样。
-- 解决：按全部唯一动画帧中 alpha 不低于 0.5 的覆盖率调整权重，零覆盖候选被排除。
+- Cause: decodeSpec produced `(1-s)^2`, while GGX/PDF/VNDF expected perceptual roughness and squared again.
+- Resolution in 0.3.6: payload retains `1-s`; existing downstream conversion remains. Extracted production tests cover FP16 and the roughness floor; old material tests failed before correction.
 
-### 离线帧统计阶段未注册
+### Translucent average alpha was used as a normal-map flag
 
-- 原因：调用了 `frame.offlineAccumulate`，但 `RtFrameStats.FRAME` 未包含该名称。
-- 解决：注册该阶段，并新增脚本静态核对全部 literal FRAME 阶段调用。
+- Cause: translucent `mat.w` stores alpha, but normal decoding ran before the glass early return.
+- Resolution in 0.3.6: exclude translucent material flags from terrain normal-map gating. Boundary tests exercise alpha>.5 without normal textures; source condition mutations are checked.
 
-### 静态光源缓冲边界与累计权重缺少保护
+### Offline diffuse and specular reflection could create excess energy
 
-- 原因：接收 section slot 可能越过本地目录，极大累计权重可能溢出为非有限值。
-- 解决：向 GPU 发布目录数量并在解引用前检查；构建全局 CDF 时拒绝非有限累计值。
+- Cause: full Lambert was added to positive Fresnel GGX without a shared energy budget.
+- Resolution in 0.3.6: normalized reciprocal diffuse complement based on a conservative GGX reflection bound. Seventy-five white-furnace cases pass (maximum 0.999770704), plus scalar and production-binding negative controls.
+- Boundary: ordinary offline PBR, valid directions and per-channel albedo/F0<=1. SSS, shading-normal transport and realtime BRDF energy remain outside the guarantee; grazing materials can become darker.
 
-### 实时着色器误用未定义离线宏
+### Glass celestial NEE had no matching transparent connection
 
-- 原因：实时变体在 warnings-as-errors 下计算未定义的 `CAUSTICA_OFFLINE_FP32`。
-- 解决：改用 `#ifdef`，只为离线变体定义该宏。
+- Cause: 0.3.5 blocked even straight-transmitting thin glass, leaving rare celestial escapes to carry its illumination.
+- Resolution in 0.3.6: bounded radiance walker multiplies `(1-F)*sqrt(tint)` per glass interface; water/opaque hits stop. Independent celestial MIS state survives straight transmission and resets on reflection/refraction.
+- Follow-up fix: NEE and continuation used different ray-cone LODs. Offline glass now uses LOD0 and a fixed overlay footprint, through a trace-only payload flag. Existing realtime filtering and payload layout remain intact.
+- Verification: extracted walker, multi-interface mean/variance experiments, depth/blocker/payload restoration tests and four behavioral mutations pass. Full GPU noise and performance validation remains open.
 
-### 开启离线后移动时显示噪点花屏
+### Offline celestial NEE and glossy escape used incompatible light models
 
-- 原因：管线曾由“离线设置是否开启”而不是“当前帧是否真正累积”选择；移动和等待阶段因此使用 FP32 离线资源、关闭 DLSS-RR/帧生成，并直接显示未累积的单帧路径追踪结果。
-- 解决：先计算当前帧决策，再以同一个 `Decision.accumulate()` 统一选择资源、历史、光源采样和时间特性；移动及等待阶段恢复实时 FP16 画面。
+- Cause: NEE used integrated directional strength while secondary misses saw independently sized/tinted decorative discs, without reciprocal MIS. Restoring the GGX peak exposed large direct-light variance.
+- Resolution: one offline angular density with `Le = strength * PDF`, complementary direct/escape weights, and primary-only decorative discs. Water/glass block celestial NEE while actual dielectric continuations carry those paths.
+- Verification: CPU numerical integration/paired sampling and compiled weight=1 mutation, source-routing probes, existing regressions and full build passed. This does not prove scene-level noise elimination; refractive caustics remain difficult to sample.
 
-### 离线渲染只等待 3 帧便开始冻结
+### RNG conversion could return the excluded endpoint 1
 
-- 原因：旧状态机按连续帧数判断静止，帧率变化会直接改变等待时间，且远短于要求的 2 秒。
-- 解决：改用 `System.nanoTime()` 的单调时间，连续静止满 `2_000_000_000` 纳秒才请求冻结；移动、签名变化、关闭或清理会重新计时。
+- Cause: converting a full 32-bit uint to float rounded its highest values to 2^32 before scaling, so probability/Fresnel tests could violate their `[0,1)` assumption.
+- Resolution: convert high 24 bits and multiply by 2^-24. Two extracted-expression boundary assertions failed before the fix and pass afterward; PCG stepping is unchanged.
 
-### 连续移动可能饿死自动解冻任务
+### Grazing-view BRDF/PDF used a different view cosine from VNDF sampling
 
-- 原因：每个移动帧都曾推进冻结代次并清除任务标记，使较慢服务器线程上的解冻任务始终过期。
-- 解决：首个移动帧使旧冻结任务失效并排队解冻；解冻待处理期间保留当前代次与标记，同时仅允许 Caustica 自己创建的冻结自动解冻。
+- Cause: evaluation floored NdotV at 1e-4 while sampling used the actual view direction.
+- Resolution: evaluate with the actual positive cosine and reject nonpositive views. Source review/build passed; GPU extreme-grazing material validation remains pending.
 
-## 仍开放
+### GGX density did not match the sampled normal distribution
 
-### 实时玻璃和水体透视模糊
+- Cause: `ggxD` added `1e-7` to its denominator while VNDF sampling retained standard GGX. At roughness 0.045, the old peak was about 41 instead of 77625; numerical projected mass was about 0.036 instead of 1.
+- Resolution: use a cancellation-resistant equivalent denominator without epsilon; remove the G1 epsilon and clamp cosine inputs. Existing positive roughness keeps denominators finite.
+- Verification: extracted production scalar tests failed 12 checks before the fix and pass after it; full 0.3.4 build and existing regressions passed. Dark-scene visual acceptance remains open.
 
-- 现象：正常实时渲染中，透过玻璃观察场景明显模糊，水体也有较轻模糊；离线原生分辨率累积更清晰。
-- 已确认原因：实时 DLSS Ray Reconstruction 的玻璃引导缓冲描述的是玻璃表面，而输出颜色包含玻璃后的透射背景，颜色与运动/深度/法线引导不匹配，重建时会把背景细节抹平；水体已有透射命中引导，所以症状较轻。
-- 后续：单独设计玻璃透射引导与水体质量修复；不属于 0.3.1 的移动/自动解冻改动。
+### Water depth absorption lost its primary medium state
 
-### 实时/离线首次切换可能短暂停顿
+- Cause: auxiliary guide tracing reused and overwrote the primary water payload before its entering flag was consumed, so the path did not enter the water medium.
+- Resolution: cache the entering flag, restore the complete primary payload after guide tracing, and use the cached state for the Beer-Lambert depth-absorption transition.
+- Verification boundary: automated transmission-guide contracts, shader compilation, and the full build passed; game-level DLSS-RR validation remains pending.
 
-- 现象：真正开始累积或回到实时模式时，可能出现一次短暂停顿。
-- 原因：FP16 实时资源与 FP32 离线资源、对应着色器和历史缓冲需要切换并重建。
-- 处理：作为当前单资源集架构的已知限制记录，后续可评估双资源预热；不影响阶段选择正确性。
+### Glass and water reconstruction guides stopped at the wrong identity
 
-### 高反弹次数的性能成本
+- Cause: one-interface guide tracing could retain a transparent surface rather than reaching the transmitted opaque/sky target, while shared guide identity did not distinguish the first interface from transmitted content.
+- Resolution: use a bounded four-transparent-interface walker; retain first-interface normal, roughness, and depth, and publish transmitted opaque/sky albedo with ordinary motion while preserving reflection-specific motion.
+- Verification boundary: automated contracts and shader/build verification passed; visual DLSS-RR quality still requires the approved in-game matrix.
 
-- 现象：实时最高 16 次、离线最高 32 次反弹会明显降低帧率或每秒累积样本数。
-- 原因：每增加一次反弹，都可能增加材质计算、光源采样和阴影射线追踪工作。
-- 处理：保留默认实时 4、离线 8；高值由用户按场景和性能手动选择，不视为自动画质档位。
+### Glass reflection was missing from the realtime Light path
 
-### 静态光源变化引发同步停顿
+- Cause: realtime Light sampling did not provide a glass-only specular NEE contribution, so reflected Light energy could be absent from glass.
+- Resolution: add the targeted glass specular NEE path while leaving ordinary block lighting unchanged.
+- Verification boundary: source contracts, shader compilation, and the full package build passed; in-game reflection validation remains pending.
 
-- 现象：渲染距离较高或地形光源变化时，光源表重建可能产生明显停顿。
-- 原因：当前会等待 GPU 空闲并全量重建全局、目录、引用与 sidecar 缓冲。
-- 后续：按 section 增量发布和退役；本阶段为保持正确性暂不改变生命周期。
+### Stained-glass and water temporal guides produced ink artifacts
 
-### 游戏内收敛与性能尚未验收
+- Cause: guide data mixed first-interface identity with transmitted content and could apply invalid transmission/refraction state after misses.
+- Resolution: retain first-interface RR identity, publish transmitted tint/Beer attenuation, use square-root glass tint, and guard water TIR/miss paths.
+- Verification boundary: automated transmission-guide contracts, shader compilation, and full packaging passed; the visual matrix remains pending.
 
-- 现象：用户此前观察到少光源场景收敛慢、6000+ SPP 仍有细颗粒，且高渲染距离降低 GPU 功率和帧内 SPP。
-- 当前状态：已完成概率、精度和主射线采样层面的修复，但尚未在 `caustica_test` 做视觉/计时对比，不能宣称症状在真实游戏中完全消失。
+### Water refraction could emit a zero direction
 
-### 实时光源方块不发出显式光照
+- Cause: a degenerate refracted vector could reach the ray path instead of taking the reflection fallback.
+- Resolution: reject zero-length refraction directions and use the safe reflection branch.
+- Verification boundary: transmission-guide contract and shader compilation passed.
 
-- 原因：静态光源表和采样开关仍限定于真正的离线累积。
-- 后续：单独设计实时光源更新与性能策略；不属于 0.2.0 本阶段范围。
+### Beer attenuation treated a `-1` miss sentinel as a valid depth
 
-### 高倍帧生成可能崩溃
+- Cause: guide attenuation consumed the `-1` miss sentinel as path length, while the primary radiance path skipped current-water absorption entirely when a submerged ray missed.
+- Resolution: after each primary or guide trace, use `payload.hitT` for finite hits and the `10000.0` trace horizon for misses, then apply guarded Beer-Lambert attenuation once before the hit/miss split.
+- Verification boundary: transmission-guide contract and shader compilation passed.
 
-- 现象：当前只支持 2x 帧生成，高倍设置存在崩溃风险。
-- 处理：视频设置只暴露 2x 开关；高倍支持需另行排查。
+### Realtime `minecraft:light` blocks lacked explicit illumination
+
+- Cause: the existing static-light table and sampling path were enabled only for true offline accumulation.
+- Resolution: capture Light levels 1 through 15 into a dedicated realtime point-source table and sample one weighted source at every eligible realtime bounce.
+- Verification boundary: automated verification is complete; game-level validation remains pending.
+
+### Pure-Light sources were not rebased correctly
+
+- Cause: zero-geometry Light completion populated neither geometry publication list, while `stream()` returned at its idle gate before computing rebase; the correct internal rebase branch was unreachable.
+- Resolution: compute rebase before idle, treat rebase as independent terrain work, enter `applyBuildChanges` for rebase-only passes, and apply the tested exact-once base/revision transition.
+- Verification boundary: automated verification is complete; game-level validation remains pending.
+
+### Dirty-group generations could publish after cancellation or desired-window removal
+
+- Cause: ownership existed only in queue/in-flight maps and was removed before staging; cancellation did not stale every unfinished token, so late grouped results could fall through to standalone publication and old geometry could gain two retirement owners.
+- Resolution: retain authoritative section-to-generation ownership through terminal publication/cancellation, revalidate generation and desired membership at completion, stale all cancelled tokens, deduplicate desired requeue, and transfer resident-to-empty retirement once.
+- Verification boundary: automated verification is complete; game-level validation remains pending.
+
+### Refracted solar guiding could create new FP32 edge fireflies during development
+
+- Cause: mapping a sampled solar direction into water and reconstructing it for the proposal PDF differs by ulps from the actual `refract()` escape direction. At square edges the PDF could fall to zero while traced solar radiance remained positive, leaving only the small BSDF density in the mixture.
+- Resolution in 0.3.7: sample/evaluate a consistently 5% wider proposal around the unchanged source; disable this proposal close to the horizon. Guided ray-cone filtering also retains the original BSDF lobe posterior.
+- Verification: deliberate emitter-edge stress with actual FP32 refraction passes; removing the angular margin fails the numerical regression. No GPU confirmation yet.
+
+## Open
+
+- 0.3.17 adaptive reconstruction remains experimental: correlated samples, heavy tails and last-sample transparent/reflection guides can still misclassify detail. Raw fireflies/convergence remain unresolved; user0.3.16 feedback invalidates its prior visual-smoothing success assumption.
+
+- 0.3.15 failed user perceptual acceptance: speed and noise look similar to0.3.14.0.3.16 adds explicitly accepted display denoising while keeping raw history; it does not resolve the underlying transport variance or establish game-quality acceptance. Tiny genuine highlights can be removed, fine detail softened, and last-sample/transparent guides can leave edge noise. See `docs/OFFLINE_DENOISE_2026-09-21.md`.
+
+- 0.3.14 user test at30000SPP: Mild improves on Off and Strong is smoothest, but obvious residual points/grain and slow convergence remain.0.3.15 addresses ordinary-lobe allocation separately; no general visual acceptance or GPU speedup has been established.
+
+- 0.3.14 adds an optional ordinary indirect-path regularization experiment, not a proven general noise repair. Default Off retains the reference. CPU planar tests reduce observed variance but alter reference brightness (up to about13.1% in the tested grazing strong case); rare baseline tails remain underconverged. Primary-surface noise, water/glass interface variance and geometry/origin risks remain open. Preserve matched effective BSDF/PDF and game A/B acceptance; see `docs/OFFLINE_REGULARIZATION_EXPERIMENT_2026-09-20.md`.
+
+- ITRP comparison does not establish another sampler defect or an accumulation fix: its cache-based secondary lighting, screen reuse and clipped reflection distribution solve a different approximate transport problem. Stable offline image denoisers are bypassed. General-scene fireflies remain unresolved; separate geometry/origin correctness from optional biased variance reduction. Evidence and boundaries: `docs/OFFLINE_ITRP_COMPARISON_2026-09-20.md`.
+
+- Overall0.3.12 acceptance failed in low-sun pools, reflective interiors and reported no-water/no-glass scenes.255/256 latest captures are below the water-guide horizon gate; blindly removing this guard would not address general lighting. Vector-BSDF audit did not establish a sampler/PDF defect.0.3.13 broadens diagnostics without a noise-reduction claim; geometry/texture/GPU-history defects and difficult indirect-path variance remain separate hypotheses. See `docs/OFFLINE_GENERAL_REASSESSMENT_2026-09-20.md`.
+
+- 0.3.11 pool-rim residual: capture155159-172 has185 ordinary-wall→water-reflection→sun records, all without roulette amplification, and64 entry→ordinary→exit→sun records. The old submerged horizontal guide misses reflection and tiny tilted exits.0.3.12 uses a deterministic interface pilot plus matched actual-normal reflection/refraction proposal densities.24 planar cases and payload/context regressions pass; scene acceptance and trace cost remain open. A single pilot does not solve spatially varying or multiple interfaces, nor skipped-interface origin-offset defects.
+
+- 0.3.9 GPU log:85 unprotected high-value records remain, including tilted water exits and dry-surface water reflections/transmissions. Normals tilt up to7.54 degrees with shader waves off; the horizontal submerged proposal does not cover these connections. Exit roulette produces a measured40415.76 sample.0.3.10 does not fix this coverage/variance problem; full-scene acceptance remains open. See `docs/OFFLINE_PATH_FINDINGS_2026-09-16.md`.
+
+- 0.3.8 acceptance failed: views20/21 both retain bright points;21 reaches18714SPP. Earlier roulette correction is insufficient, and screenshots do not locate the first problematic event. 0.3.9 records actual water-celestial paths without changing transport. Logs are bounded and thresholded, so missing path classes do not prove their correctness. GPU evidence was collected on2026-09-16 and is analyzed in `docs/OFFLINE_PATH_FINDINGS_2026-09-16.md`.
+
+- 0.3.7 visual acceptance failed (2026-09-15): user reports source fireflies roughly unchanged and supplies17/18 screenshots, second at5078SPP. Confirmed variance hole: only guide-selected directions skipped roulette, although BSDF-selected directions inside the guide have the same tiny mixture throughput. Two .02-survival steps amplify a surviving example by2500. 0.3.8 protects either selected-guide or positive-guide-density directions; extracted regression preserves the mean and rejects the old branch-only policy. Views20/21 split protected/unprotected final water-celestial legs. Screenshot causality remains unconfirmed; earlier-segment variance and uncovered mirror chains can remain.
+- 0.3.6 water-pool reproduction (2026-09-14): empty pool reportedly clean; adding water produces bright points mainly in sunlit areas, including view 17 at 2083 SPP and view 18 at 4141 SPP. `celestialVisibility` rejects water, and water continuation sets `previousCelestialDelta=true`, so refracted solar illumination of the bottom relies on rare continuation hits. This confirmed sampling-coverage limitation is consistent with the reproduction; exact GPU paths and any additional weight/normal defects remain unmeasured. Next: validate an explicit refracted celestial connection for a planar water interface against independent means/PDFs, with matching continuation MIS. Do not simply pass straight shadow rays through water or suppress delta escape. Details: `docs/OFFLINE_DIAGNOSTICS.md`.
+- 0.3.7 implements that direction as continuation guiding rather than separate connection NEE: 50% original BSDF support remains, all relevant PDFs use the mixture, and tracing performs the real interface/occlusion checks. Six analytic pool tests pass without altering the existing eta-throughput or wave model. Game convergence, arbitrary water-reflection chains and runtime cost remain open.
+- 0.3.5 visual acceptance failed: user screenshots `035_10/11/12.png` show remaining fireflies, with reported worsening in 11 and new spikes above 10000 SPP. Single-surface MIS tests did not validate full-path convergence. Evidence: `docs/superpowers/specs/2026-09-10-firefly-path-reassessment.md`.
+- 0.3.6 corrects the material input defects and offline ordinary-BRDF energy in code; their contribution to the user's scene remains unmeasured. Realtime retains the prior BRDF until its guide/appearance policy is evaluated together.
+- Celestial variance remains open after thin-glass NEE: water refraction/mirror chains still lack a straight connection, while terminal NEE has no continuation competitor. No default sample clamp or path regularization has been added.
+- Static area-light terminal NEE still applies MIS without a matching continuation, causing downward bias. Separate from the bright-tail symptom; not yet fixed.
+- Shading-normal overwrite loses the original geometric normal for hemisphere/bias decisions, creating a possible self-intersection/backside-lighting risk. Scene causality not established.
+- Persistent low-light bright noise: 18 user screenshots (1500/3000/6000 SPP, 8 bounces, +0.4 EV) confirm residual bright points, especially views 10 and 12. Some grain decreases, but view 10 improves little from 3000 to 6000. GGX correction alone did not achieve visual acceptance.
+- Official commit 5d6bf62 math.slang explicitly documents that its GGX epsilon suppresses an unweighted celestial NEE/glossy double-count and variance problem. The scalar correction must be paired with a coherent celestial estimator; switching to wavefront alone does not fix this.
+- The 0.3.5 single-connection estimator correction is implemented but did not resolve the symptom; realtime retains its old artistic celestial model. Continue evaluating combined output and path histories, not only source views 10/11/12.
+- Offline GPU history weight is capped at 16,777,208 while the HUD/sample sequence continues. Beyond this limit accumulation approximates a fixed-weight running average, not an all-samples average; no evidence links it to ordinary low-SPP noise.
+
+- Ordinary emissive blocks still lack dedicated realtime explicit NEE.
+- In-game glass/water visual validation remains pending, including clear/stained and stacked glass, shallow/deep water, motion, waves, and Frame Generation combinations.
+- Full offline static-light-table rebuilds can stall while waiting for GPU idle.
+- Offline convergence and performance require game-level validation.
+- Realtime/offline resource transitions may cause a brief one-time stall.
+- High bounce counts and higher-than-2x frame generation remain performance/stability concerns.

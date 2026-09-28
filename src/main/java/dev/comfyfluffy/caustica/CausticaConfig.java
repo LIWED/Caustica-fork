@@ -629,6 +629,10 @@ public final class CausticaConfig {
                     bool("caustica.rt.offline", "offline.enabled", false);
             public static final IntSetting MAX_BOUNCES =
                     clampedInt("caustica.rt.offline.maxBounces", "offline.max-bounces", 8, 2, 32);
+            public static final IntSetting REGULARIZATION =
+                    clampedInt("caustica.rt.offline.regularization", "offline.regularization", 0, 0, 2);
+            public static final BooleanSetting DENOISE =
+                    bool("caustica.rt.offline.denoiseAdaptive", "offline.denoise-adaptive", false);
 
             private Offline() {
             }

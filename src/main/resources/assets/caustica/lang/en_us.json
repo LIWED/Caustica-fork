@@ -1,4 +1,11 @@
 {
+	"caustica.options.rt.offlineDenoise": "Offline Adaptive Denoising (Experimental)",
+	"caustica.options.rt.offlineDenoise.tooltip": "Off by default. Uses measured sample variation to reduce uncertain bright points and grain; stable details are retained. Requires at least 32 accumulated frames. Rare highlights may still be misclassified. Toggle compares against unchanged raw accumulation without resetting samples. Source view only. The rejected 0.3.16 filter setting is not inherited.",
+	"caustica.options.rt.offlineRegularization": "Offline Indirect Reflection Smoothing",
+	"caustica.options.rt.offlineRegularization.tooltip": "Experimental; active only during offline accumulation. Reduces some indirect reflection noise while preserving the visible surface's authored roughness. May change indirect highlights, caustics and brightness. Does not regularize water or glass interfaces. Changing this resets accumulation; Off retains the original result.",
+	"caustica.options.rt.offlineRegularization.0": "Off (Original)",
+	"caustica.options.rt.offlineRegularization.1": "Mild (Experimental)",
+	"caustica.options.rt.offlineRegularization.2": "Stronger (Experimental)",
 	"caustica.options.rt.offlineRendering": "Offline Rendering",
 	"caustica.options.rt.offlineRendering.tooltip": "After the camera is still, freezes single-player game ticks and progressively accumulates native-resolution path tracing. Temporarily bypasses DLSS Ray Reconstruction and Frame Generation. Multiplayer servers require /tick freeze. Moving the camera resets accumulated samples.",
 	"caustica.offline.holdStill": "Offline: hold camera still",
@@ -60,7 +67,7 @@
 	"caustica.options.rt.frameGeneration.tooltip": "Inserts one generated frame between rendered frames (2x). Requires a supported NVIDIA RTX GPU and driver. Higher multipliers are not exposed because they are currently unstable. Cannot be used with Offline Rendering.",
 
 	"caustica.options.rt.debugView": "Debug View",
-	"caustica.options.rt.debugView.tooltip": "Visualize an intermediate ray-tracing buffer instead of the final image.",
+	"caustica.options.rt.debugView.tooltip": "Views 1-7 show guide buffers. Offline contribution views 8-21 apply only while accumulating; movement shows the normal image. Use fixed manual exposure for comparisons. Views 8-11 include all path depths; view 12 selects bounce > 0, not a complete physical indirect-light decomposition.",
 	"caustica.options.rt.debugView.0": "Off",
 	"caustica.options.rt.debugView.1": "Normals",
 	"caustica.options.rt.debugView.2": "Albedo",
@@ -68,5 +75,19 @@
 	"caustica.options.rt.debugView.4": "Roughness",
 	"caustica.options.rt.debugView.5": "Motion",
 	"caustica.options.rt.debugView.6": "Specular",
-	"caustica.options.rt.debugView.7": "Specular Motion"
+	"caustica.options.rt.debugView.7": "Specular Motion",
+	"caustica.options.rt.debugView.8": "Offline: Block Direct Light (NEE)",
+	"caustica.options.rt.debugView.9": "Offline: Emissive Surface Hits",
+	"caustica.options.rt.debugView.10": "Offline: Celestial Direct Light + SSS",
+	"caustica.options.rt.debugView.11": "Offline: Sky Hits (Including Sun/Moon Disc)",
+	"caustica.options.rt.debugView.12": "Offline: Indirect Paths (Bounce > 0)",
+	"caustica.options.rt.debugView.13": "Offline: base sky",
+	"caustica.options.rt.debugView.14": "Offline: analytic celestial escape",
+	"caustica.options.rt.debugView.15": "Offline: celestial after glass transmission",
+	"caustica.options.rt.debugView.16": "Offline: celestial after glass reflection",
+	"caustica.options.rt.debugView.17": "Offline: celestial after water refraction",
+	"caustica.options.rt.debugView.18": "Offline: celestial after water reflection",
+	"caustica.options.rt.debugView.19": "Offline: terminal celestial NEE / SSS",
+	"caustica.options.rt.debugView.20": "Offline: water celestial, protected final leg",
+	"caustica.options.rt.debugView.21": "Offline: water celestial, unprotected final leg"
 }

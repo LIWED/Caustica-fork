@@ -1,85 +1,162 @@
-# 更新日志
+# Changelog
+
+## [0.3.17] - 2026-09-21
+
+- Full build/24-shader package checks passed. Automatically installed0.3.17 and disabled/preserved0.3.16; active and backup hashes verified. Only accumulation/denoise shader binaries changed.
+
+- Record failed0.3.16 acceptance: fixed spatial smoothing destroys fine detail even without noise. Replace it with uncertainty-gated peak filtering and one local adaptive pass, backed by separate weighted temporal moments; raw mean and exposure remain independent.
+- Default Off under new `offline.denoise-adaptive` key; persisted old denoise=true cannot silently enable it. Stable, insufficient-history and invalid-statistics pixels bypass reconstruction. Existing diagnostic views stay raw.
+- Add fine reflection/point-highlight/low-noise detail tests, real accumulation-kernel variableSPP statistics, reset/cap/nonfinite tests and fixed-strength negative control. Related regressions and independent review pass; full game visual acceptance remains pending. See `docs/OFFLINE_DETAIL_RECOVERY_2026-09-21.md`.
+
+## [0.3.16] - 2026-09-21
+
+- Full build and24-shader package verification passed;23 existing shader binaries unchanged. Automatically installed0.3.16 and retained0.3.15 disabled; destination and backup hashes verified.
+
+- Record failed perceptual acceptance of0.3.15; user now authorizes optional display reconstruction. Add default-on Offline Image Denoising: compatible-neighbor outlier filter followed by three normal/depth/material/color-aware smoothing stages, source view0 only.
+- Preserve raw FP32 history and raw exposure; toggling does not reset accumulation. Add independent scratch images, immutable pass descriptors, barriers/cleanup, bilingual settings and existing-stage timing. Tiny true highlights and texture details may be softened; no integrator change or true-convergence claim.
+- Production GLSL CPU fixtures cover grain/fireflies/HDR/borders/material/geometry/reflection edges and negative controls; routing and existing offline regressions pass. Evidence and retest: `docs/OFFLINE_DENOISE_2026-09-21.md`.
+
+## [0.3.15] - 2026-09-20
+
+- Automatically installed the verified runtime to the authorized test instance; retained0.3.14 disabled and verified both destination/backup hashes.
+
+- Use offline ordinary-lobe weight bounds including the diffuse energy budget to allocate reflection/diffuse samples. Sampling, PDF and guided posterior share one probability; preserve BRDF, smoothing strength and realtime probability expression.
+- Diagnose ordinary-only GPU paths with weight26.174 after repeated high-F0 scattering. Add45RGB numerical cases, independent means and old-allocation negative control; affected regressions, independent review and full build/package checks pass. Single-step variance improvement is not a game speed claim; downstream texture filtering and rare lighting tails remain limitations.
+- Preserve0.3.14 experiment data and record partial user improvement at30000SPP. Details: `docs/OFFLINE_LOBE_SAMPLING_2026-09-20.md`.
+
+## [0.3.14] - 2026-09-20
+
+- Add an optional offline indirect-reflection smoothing experiment (Off/Mild/Stronger, default Off). Track non-delta history and regularize only subsequent ordinary PBR with matched evaluation/sampling/PDF/MIS. Reuse push-flag bits; mode changes reset history. Realtime and ideal water/glass interfaces unchanged.
+- Added production-extracted policy/transport experiments, primary-roughening negative control, shader wiring and nine history-transition checks. Existing BSDF/offline/diagnostic/probe/interface checks and independent review pass. Report documents biased brightness shifts and an underconverged grazing baseline; no GPU convergence claim.
+- Full native/Java/shader build and package verification passed. Automatically installed0.3.14 to the test instance with verified hash, preserving0.3.13 disabled. See `docs/OFFLINE_REGULARIZATION_EXPERIMENT_2026-09-20.md` for source-view A/B instructions.
+
+## Research — 2026-09-20 (no version change)
+
+- Compared local ITRP offline accumulation, cache propagation, reflection sampling and stable-frame filter bypasses against0.3.13. Documented why its approximate transport cannot serve as an equivalent full-path convergence baseline, and why copying its clipped GGX random domain would invalidate current PDFs.
+- Recorded separate next experiments for geometric-normal/origin correctness and optional indirect-path regularization, with cache reuse as a larger follow-up. Source findings are not GPU acceptance; renderer/package unchanged. See `docs/OFFLINE_ITRP_COMPARISON_2026-09-20.md`.
+
+## [0.3.13] - 2026-09-20
+
+- Recorded failed general-scene acceptance;255/256 latest water captures fall below the solar guide's horizon gate. Old capture does not cover the later reflective room.
+- Broaden bounded observation to direct lighting and secondary emissive/sky sources, threshold32. Rearm256-record quota per accumulation with generation isolation,2048 lifetime records and16MB cap. No transport/appearance change.
+- Added actual FP32 vector-BSDF audit and capture-rearming regressions;324 material/108 distribution cases and numerical negative controls pass. Analyzer reports source/generation/nonfinite counts and restricts legacy horizontal-edge analysis to applicable versions. Build and diagnostic/offline tests pass; GPU scene diagnosis remains pending.
+- Installed verified0.3.13 automatically to the test instance, preserving0.3.12 as a disabled backup; destination hash and23 packaged shaders/locales verified.
+
+## [0.3.12] - 2026-09-16
+
+- Analyzed0.3.11 captures: remaining pool-rim solar paths are mainly ordinary-wall→water reflection, outside the old submerged-only proposal; tilted underwater exits also persist.
+- Add a bounded deterministic offline pilot to select the actual water normal for reflected/refracted solar proposals. Preserve full payload and use the fixed context in continuation and both NEE competitors; retain generated-sample forward density and complete BSDF support.
+- Added extracted FP32 mapping/edge/Jacobian tests,24 independent planar transport cases and pilot isolation/fallback regressions. Realtime performs no pilot. Full build, relevant old/new tests and independent review pass; all23 packaged shaders and locales verified. GPU variance and runtime cost still need acceptance.
+- Automatically installed the verified0.3.12 runtime package to the test instance, preserving0.3.11 as `.jar.disabled`; destination hash verified.
+
+## [0.3.11] - 2026-09-16
+
+- Analyzed the second GPU capture: protected boundary outliers are absent above threshold, while123 false water exits expose stale incident-medium state. Scene changes prevent a controlled noise-reduction estimate.
+- Reconcile incident medium with water entry/exit orientation before IOR selection in radiance and both transmission-guide paths; preserve that state on reflection.
+- Added an extracted-policy regression using a captured false exit, consistent/stale-state checks and three independently removed-correction controls. Prior-segment recovery and remaining sampling variance stay open.
+
+- Full build and targeted regressions passed; verified0.3.11 installed to the test instance and0.3.10 preserved as a disabled backup. GPU verification remains pending.
+
+## [0.3.10] - 2026-09-16
+
+- Analyzed the first actual GPU path log; verified replay/source agreement and separated selected-guide boundary outliers from unsupported tilted-water/dry-interface paths.
+- Fixed FP32 inverse-Snell support rejection dropping a generated sample’s own proposal density: preserve its forward density in continuation throughput/MIS. Arbitrary-direction support checks remain unchanged.
+- Added40000 generated-edge regressions with the recorded light frame and old-code negative control, plus reproducible log analysis. Remaining unprotected-path variance is explicitly open.
+
+- Full build and targeted regressions passed; runtime version,23 shaders and locales verified. Automatically installed0.3.10, preserving0.3.9 as a disabled backup; GPU image verification remains pending.
+
+## [0.3.9] - 2026-09-16
+
+- Recorded failed0.3.8 image acceptance; retained its transport for diagnosis.
+- Added bounded GPU water-celestial path observation and same-seed replay with guide restoration, graphics-timeline readback and local asynchronous JSONL logs. Session log starts after256 samples, including runs without qualifying events.
+- Added shader ABI/isolation contracts, host decoder/lifetime tests, and updated reflected WorldPush ABI to640 bytes. GPU replay consistency and scene convergence remain pending.
+- Added automatic runtime JAR deployment to the authorized test instance with metadata-based old-version disabling, reversible backups, hash verification and rollback tests.
+
+- Full build and targeted regressions passed; verified package installed automatically to the test instance, with0.3.8 disabled and preserved. Actual GPU capture remains pending.
+
+## [0.3.8] - 2026-09-15
+
+- Recorded failed0.3.7 game acceptance: user reports source white points roughly unchanged and remaining17/18 points.
+- Extended roulette protection to BSDF-selected directions with positive eligible water-guide density, preventing repeated survival amplification on the same solar directions already protected for guide-selected samples.
+- Added views20/21 for water celestial contributions with protected/unprotected final legs; expanded UI/locales and tested all484 view transitions plus final-leg flag mutations.
+- Added a deterministic two-roulette mean/variance regression and a branch-only negative control. Independent review confirms the state lifetime and partition; visual acceptance remains pending.
+- Full native/Java/shader build passed; water, diagnostic, offline, celestial, transmission, bounce-option and realtime-Light checks passed. Version,23 shader hashes and both locales verified in `build/libs/caustica-0.3.8.jar`.
+
+## [0.3.7] - 2026-09-14
+
+- Added offline water celestial continuation guiding: a 50/50 refracted-solar/BSDF mixture with matched throughput and static/celestial MIS probabilities. Actual water/obstacle tracing remains responsible for transport.
+- Protected guided dielectric legs from premature roulette; preserved conditional glossy/diffuse ray-cone filtering on guided PBR directions.
+- Added a 5% proposal-only angular margin and conservative horizon gate after reproducing FP32 solar-edge PDF/escape disagreement. Solar size/radiance are unchanged.
+- Added production-extracted water proposal/transport regressions, actual-refraction edge stress, full-support and roulette checks, and four numerical negative controls. Updated two existing source contracts for the shared continuation evaluator and area-light mixture argument.
+- Full native/Java/Slang/SPIR-V build and relevant standalone regressions passed. Package version, 23 shader hashes and both locale resources match final outputs; candidate `build/libs/caustica-0.3.7.jar`.
+- GPU pool/city/dark-scene validation and timing remain pending; no claim that all water reflections or complex caustics are resolved.
+
+## Investigation follow-up - 2026-09-14
+
+- Recorded the empty/water-filled pool A/B reproduction and water-transmission/reflection celestial views; 0.3.6 visual acceptance remains open.
+- Confirmed that offline direct celestial connections stop at water while water continuation resets celestial MIS to delta. The pool therefore exposes missing explicit refracted-light sampling; overlapping path-history views do not prove two independent defects.
+- Documentation only; no shader changes, version bump, new package or deployment.
+
+## [0.3.6] - 2026-09-14
+
+- Fixed LabPBR roughness double conversion and translucent alpha being interpreted as a normal-map flag.
+- Added an offline-only reciprocal diffuse energy budget; ordinary dielectric reflection no longer adds full Lambert on top of GGX. Realtime BRDF/guide policy is unchanged.
+- Replaced fully blocked offline glass shadows with bounded thin-glass celestial connections matching Fresnel, texture tint and remaining bounce budget; separated celestial MIS state from static lights.
+- Unified offline glass texture footprints with LOD0 and a trace-only payload bit without changing ABI; disabled stale water-focus shadow data in offline celestial evaluation.
+- Added diagnostic views 13–19 and material/energy/multi-interface regression tests with negative controls; updated previous source contracts for the expanded contribution interface.
+- Full native/Java/Slang/SPIR-V build and standalone regressions passed; package metadata, 23 shader hashes and both diagnostic locales verified.
+- GPU scene acceptance is pending. Grazing diffuse appearance, distant glass aliasing and the cost of additional connection traces require user testing.
+
+## Unreleased investigation - 2026-09-10
+
+- Recorded failed 0.3.5 user acceptance, including persistent/reappearing bright points above 10000 SPP and reported worsening in view 11.
+- Re-audited material-to-BSDF data flow, transparent/specular chains, terminal sampling and accumulation against primary technical sources.
+- Documented confirmed roughness double conversion, translucent alpha/normal-flag collision and non-conserving diffuse/specular energy, with numerical counterexamples and an ordered validation plan.
+- Documentation only; no rendering code change, version bump, new package or deployment.
+
+## [0.3.5] - 2026-09-10
+
+- Unified offline active celestial radiance, direction PDF and NEE/BSDF MIS; preserved camera-visible decorative discs and unweighted base sky.
+- Stopped offline celestial shadow connections at glass/water to avoid overlapping the incompatible tint-shadow and dielectric transport models.
+- Handled terminal vertices, delta continuations and particle-backside PDFs; removed shared grazing-view PDF/BRDF flooring.
+- Fixed PCG float conversion occasionally returning 1; high-24-bit conversion keeps sampling in `[0,1)`.
+- Added production-extracted numerical tests, paired-estimator energy/variance checks and unweighted-MIS mutation control; preserved diagnostic and realtime Light regression coverage.
+- Full build and 23 packaged shader hash checks passed. Subsequent user dark-scene testing failed visual acceptance; transparent/specular-path convergence remains unresolved.
+
+## [0.3.4] - 2026-09-09
+
+- Restarted offline convergence work from current source evidence and the reported low-light reproduction, rather than assuming historical docs prove correctness.
+- Corrected GGX D/G1 scalar formulas and cosine bounds; added production-extracted numerical regressions.
+- Added the restart design, execution plan and unresolved celestial/grazing/long-accumulation findings.
+- Added five offline contribution views with per-sample filtering, preserved realtime waiting behavior, view-change history reset, and English/Chinese labels.
+- Diagnostic policy, all nine output-bypass mutations and 169 view-reset transitions pass. Full native/Java/Slang/SPIR-V build, existing regressions and package resource checks pass; no game-level noise-elimination claim.
+
+## [0.3.3] - 2026-07-30
+
+- Added glass-only realtime Light specular NEE, while keeping ordinary blocks on their unchanged lighting path.
+- Kept first-interface RR specular identity stable through transparent guide walking.
+- Applied square-root glass tint, guide tint, and Beer-Lambert attenuation to glass/water transmission guides.
+- Switched water refraction to the geometric normal, forced safe reflection on TIR, and made primary/guide water misses attenuate over the `10000.0` trace horizon before miss publication.
+- Fixed water depth absorption: auxiliary guide tracing no longer overwrites the primary payload before its entering flag is consumed; cached state and full-payload restore re-enable the Beer-Lambert medium transition.
+- Added a shared four-transparent-interface glass/water guide walker. First-interface normal, roughness, and depth remain stable, while transmitted opaque/sky albedo and ordinary motion are used for reconstruction guides.
+- Completed automated contract, shader, and full-build verification. Game-level DLSS-RR visual validation remains pending.
+- Added a `minecraft:light` source sidecar, including support for sections with empty render geometry.
+- Added source revision tracking for add/remove/`LEVEL` changes, pruning, rebasing, and atomic dirty-group publication.
+- Fixed dirty-group generation ownership across queued, in-flight, and staged members, including cancellation, deduplicated requeue, stale-result rejection, desired-window pruning, and single-owner geometry retirement.
+- Made rebasing independently reachable for completely idle pure-Light windows; base translation and source revision now advance exactly once without changing empty-world Light revision.
+- Added the 32-byte realtime point table with graphics-timeline retirement of immutable GPU generations.
+- Added realtime shader sampling of one weighted Light source per eligible bounce.
+- Made realtime point sampling and offline full static-light sampling mutually exclusive.
+- Completed automated source/build verification; game visual and performance validation remains pending.
 
 ## [0.3.2] - 2026-07-28
 
-### 离线累积稳定性
-
-- 修复静止两秒后离线累积只完成一个 2 SPP 帧，随即返回“保持静止”并反复循环的问题。
-- 根因是 FP16/FP32 管线重建会无条件重置 LabPBR 图集并调用 `RtTerrain.markAllDirty()`；由此产生的内部 `sceneRevision` 变化使离线渲染签名失效并清空历史。
-- 管线切换现在先判断方块图集来源：来源未变且 LabPBR 视图有效时直接重新绑定现有视图，不再重建材质或标记全部地形。
-- 首次初始化、来源图集变化或材质视图缺失仍执行完整重建；真实地形、光源与资源包变化继续通过 `sceneRevision` 保护离线历史正确性。
-
-### 验证边界
-
-- 新增源码契约，防止普通实时/离线管线切换再次无条件重建材质图集和使地形失效。
-- 自动测试和本地构建不等同于游戏内验收；仍需在 `caustica_test` 中确认 SPP 持续增长。
-- 实时玻璃和水体透视模糊仍为开放问题，本版本未修改其 DLSS-RR 引导。
+- Stabilized offline accumulation across FP16/FP32 pipeline transitions.
 
 ## [0.3.1] - 2026-07-28
 
-### 离线/实时切换
-
-- 将离线启动条件从“静止 3 帧”改为单调时钟计量的连续静止 2 秒。
-- 修复开启离线设置后，移动和等待阶段错误使用 FP32 离线管线并直接显示未累积噪声的问题。
-- 由当前帧的实际累积状态统一选择 FP16/FP32、实时/离线 raygen、反弹次数、静态光源、冻结水体/天空和历史累积。
-- 移动、等待静止、等待冻结和等待手动冻结期间保持实时画面，并按用户原设置启用 DLSS-RR 与 2x 帧生成；仅真正累积时自动关闭。
-- 视角移动时立即发布实时模式，并仅对 Caustica 自己创建的冻结安排自动解冻。
-- 冻结/解冻异步任务增加会话与代次保护；连续移动不会使已排队的有效解冻任务持续失效。
-
-### 验证边界
-
-- 新增两秒计时、重置条件、冻结所有权、阶段驱动资源选择及连续移动解冻的行为和源码契约测试。
-- 自动测试与完整构建不等同于游戏内视觉、时序和性能验收，仍需在 `caustica_test` 中验证。
+- Added the two-second offline idle transition and frame-policy controls.
 
 ## [0.3.0] - 2026-07-27
 
-### 反弹次数设置
-
-- 实时路径反弹范围由 2–8 扩展为 2–16，默认值保持 4。
-- 新增独立的离线路径反弹选项，范围 2–32，默认 8。
-- 离线选项只在真正累积样本时生效；移动视角、等待静止和等待冻结时继续采用实时设置。
-- 离线反弹次数加入渲染签名，修改后会清空不兼容的累积历史。
-- 更新 11 种语言的设置名称与提示，并说明离线 SPP 是每帧采样批量。
-
-### 验证
-
-- 新增反弹边界、运行时选择、配置持久化、视频设置和本地化契约测试。
-- Java 25 编译、原生 NGX shim、Gradle 完整构建及 JAR 内容核验通过。
-- 本版本不包含实时光源方块及其 GPU 缓冲生命周期改造。
-
-## [0.2.0] - 2026-07-26
-
-### 离线收敛
-
-- 新增半径 2 section 的局部静态光源索引，以局部 90% / 全局 10% 无偏混合采样。
-- 统一 NEE 与 BSDF 命中发光三角形时的选择 PDF 和 reciprocal MIS。
-- 发光 cutout 三角形按全部唯一动画帧的 alpha 覆盖率调整采样权重。
-- 对粒子路径禁用没有配对 NEE 的 reciprocal MIS，避免发光命中过度降权。
-
-### 离线精度与采样
-
-- 新增 EXT/NV 离线 RGBA32F raygen 变体；实时 trace 与显示 resolve 保持 RGBA16F。
-- 离线 trace/history 全链路使用 RGBA32F。
-- 每个离线 SPP 依据全局样本编号重新生成低差异主射线和路径随机种子。
-- CPU/GPU 使用一致的 64 位定点 Weyl 相位，避免高样本编号发生相位塌缩。
-- 写入 trace 前逐通道清除负值、NaN 和 Inf，不引入默认 firefly 亮度裁剪。
-
-### 稳定性与诊断
-
-- 注册 `frame.offlineAccumulate` 并新增 FRAME 阶段名契约测试。
-- 为局部目录访问增加发布数量边界检查。
-- 拒绝非有限的全局静态光源累计权重。
-- 修复实时着色器在未定义离线宏时的编译错误。
-
-### 构建
-
-- 功能版本从 0.1.0 升级为 0.2.0，版本唯一来源保持为 `gradle.properties`。
-- 完整原生/Gradle 构建通过；普通 JAR 的内嵌版本及四个实时/离线 EXT/NV raygen 资源已核验。
-- 精确产物大小与 SHA-256 记录在 Task 4 交付报告中。
-
-## [0.1.0]
-
-- Vulkan 路径追踪、DLSS Ray Reconstruction、HDR 与 LabPBR。
-- 视频设置中的 2x DLSS 帧生成即时开关。
-- 离线渲染、冻结游戏刻、样本 HUD 与原生分辨率加权累积。
-- 静态发光地形、岩浆和 Minecraft 光源方块的离线显式采样。
+- Added independent realtime and offline path-bounce settings.

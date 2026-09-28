@@ -105,7 +105,8 @@ float rayConeUnitUvLod(uint rayCone, float2 textureSizePx) {
 // reflectance (dielectric F0 0..229 / predefined metal 230..237 / generic metal albedo); alpha = emission
 // (255 = ignored). `albedo` feeds the generic-metal F0.
 void decodeSpec(float4 s, float3 albedo, out float rough, out float metal, out float3 f0, out float emission, out float sss) {
-    rough = (1.0 - s.r) * (1.0 - s.r);
+    // Payloads/guides store perceptual roughness; GGX D, G1 and VNDF square it to alpha.
+    rough = 1.0 - s.r;
     float g = s.g * 255.0;
     if (g < 229.5) {
         metal = 0.0;
@@ -184,6 +185,7 @@ float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDi
 
 [shader("closesthit")]
 void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+    bool offlineGlassLod0 = (payload.flags & PAYLOAD_OFFLINE_GLASS_LOD0) != 0u;
     payload.staticLightIndex = 0xFFFFFFFFu;
     float2 attribs = attr.barycentrics;
     uint rayCone = payload.rayCone;
@@ -348,9 +350,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         n = -n;
     }
 
-    // LabPBR normal map (_n), gated by mat.w — shared decode (TBN from position-fetch + UVs).
+    // Translucent terrain repurposes mat.w as average alpha, not a normal-map flag.
+    // Only ordinary terrain uses the LabPBR flag (TBN from position-fetch + UVs).
     float ao = 1.0;
-    if (pr.mat.w > 0.5) {
+    if (pr.tint.w <= 1.5 && pr.mat.w > 0.5) {
         n = perturbNormal(n, tp0, tp1, tp2, uv0, uv1, uv2, vdir,
                 blockNormalAtlas.SampleLevel(uv, blockLod), ao);
     }
@@ -359,12 +362,15 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // (material 3). albedo carries the transmission tint = texel rgb mixed toward white by (1 − opacity),
     // so a more opaque texel tints transmitted light more strongly.
     if (pr.tint.w > 1.5) {
-        float4 gtex = blockAtlas.SampleLevel(uv, blockLod);
+        // Match offline NEE and continuation tint despite their different ray-cone spreads.
+        // Fixed LOD keeps sharp textures (potentially more aliasing); realtime retains cone filtering.
+        float4 gtex = blockAtlas.SampleLevel(uv, offlineGlassLod0 ? 0.0 : blockLod);
         float3 gtexRgb = srgbToLinear(gtex.rgb);
         // Translucent blocks (glass, ice, …) are breakable too — apply the same overlay here, reusing
         // gtex (already sampled above) rather than re-fetching blockAtlas.
         payload.albedo = applyBreaking(lerp(float3(1.0, 1.0, 1.0), gtexRgb * tint * ao, gtex.a),
-                rayCone, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), n);
+                offlineGlassLod0 ? packHalf2(float2(0.0, 0.0)) : rayCone,
+                WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), n);
         payload.normal = n;
         payload.hitT = RayTCurrent();
         payload.motionPrev = float3(0.0, 0.0, 0.0);

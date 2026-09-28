@@ -16,6 +16,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtMaterials;
+import dev.comfyfluffy.caustica.rt.light.RealtimeLightBlockIndex;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
@@ -64,6 +65,7 @@ import dev.comfyfluffy.caustica.rt.terrain.RtTerrainMesher.CpuSection;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrainMesher.PackedSection;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrainMesher.WorkerTessState;
 import dev.comfyfluffy.caustica.rt.terrain.RtStaticLights.CpuLight;
+import dev.comfyfluffy.caustica.rt.light.RealtimeLightBlockIndex.Source;
 import dev.comfyfluffy.caustica.rt.terrain.RtSectionBuilder.PreparedSection;
 import dev.comfyfluffy.caustica.rt.terrain.RtSectionTable.Generation;
 import dev.comfyfluffy.caustica.rt.terrain.RtSectionTable.SectionGeom;
@@ -112,6 +114,7 @@ public final class RtTerrain {
     private static final long NO_TESS_TOKEN = Long.MIN_VALUE;
     private static final int NO_MISSING_INDEX = -1;
     private static final long NO_DIRTY_GROUP = 0L;
+    private static final Source[] NO_LIGHT_BLOCKS = new Source[0];
     // If no render frame has driven a streaming pass for this long, the 20 TPS tick takes over (loading
     // screens / hidden window — states where render-driven streaming has stopped).
     private static final long STREAM_FALLBACK_AFTER_NANOS = 200_000_000L;
@@ -128,7 +131,9 @@ public final class RtTerrain {
 
     private final Long2ObjectOpenHashMap<SectionGeom> resident = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<CpuLight[]> lightOnly = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<Source[]> lightBlocks = new Long2ObjectOpenHashMap<>();
     private final RtStaticLights staticLights = new RtStaticLights();
+    private final RtRealtimeLightBlocks realtimeLightTable = new RtRealtimeLightBlocks();
     // Persistent palette snapshots for tessellation regions (render-thread only); invalidated on dirty
     // sections, column unload/window-leave, and full clears.
     private final RtSectionSnapshots snapshots = new RtSectionSnapshots();
@@ -146,7 +151,6 @@ public final class RtTerrain {
     private final LongOpenHashSet loadedColumns = new LongOpenHashSet();
     private final LongArrayList missing = new LongArrayList();
     private final Long2IntOpenHashMap missingIndex = new Long2IntOpenHashMap();
-    private final Long2LongOpenHashMap queuedDirtyGroup = new Long2LongOpenHashMap();
     private final LongArrayList reextract = new LongArrayList();
     private final LongOpenHashSet queuedReextract = new LongOpenHashSet();
     // Publish accumulators: window sync (tick) and completion drain (streaming pass) may run on different
@@ -156,7 +160,7 @@ public final class RtTerrain {
     // Worker/build bookkeeping. `inFlight` maps a dispatched section key to a monotonic token; a completed
     // task whose token no longer matches is discarded. The active-task barrier spans worker + GPU lifetime.
     private final Long2LongOpenHashMap inFlight = new Long2LongOpenHashMap();
-    private final Long2LongOpenHashMap inFlightDirtyGroup = new Long2LongOpenHashMap();
+    private final DirtyGroupGenerationOwnership dirtyGroupOwnership = new DirtyGroupGenerationOwnership();
     private final Long2ObjectOpenHashMap<DirtyGroup> dirtyGroups = new Long2ObjectOpenHashMap<>();
     private final ConcurrentLinkedQueue<SectionResult> completedBuilds = new ConcurrentLinkedQueue<>();
     private final Object activeTaskLock = new Object();
@@ -165,6 +169,8 @@ public final class RtTerrain {
     // Monotonic identity of the static traced scene. Offline accumulation compares this each frame so
     // a newly published/removed/rebased section can never blend with the previous geometry.
     private long sceneRevision;
+    private long realtimeLightBlockRevision;
+    private long offlineLightBlockRevision = Long.MIN_VALUE;
     private long dirtyGroupSeq;
     private final RtSectionTable table = new RtSectionTable();
     private boolean ready;
@@ -192,9 +198,7 @@ public final class RtTerrain {
 
     private RtTerrain() {
         missingIndex.defaultReturnValue(NO_MISSING_INDEX);
-        queuedDirtyGroup.defaultReturnValue(NO_DIRTY_GROUP);
         inFlight.defaultReturnValue(NO_TESS_TOKEN);
-        inFlightDirtyGroup.defaultReturnValue(NO_DIRTY_GROUP);
     }
 
     /**
@@ -235,8 +239,32 @@ public final class RtTerrain {
                                       int localReferenceCount, long revision) {
     }
 
+    public record RealtimeLightBlockSnapshot(
+            long address, int count, float totalWeight, long revision) {
+    }
+
+    /**
+     * Build or return the realtime Light-block table. Callers must compare the returned revision with
+     * {@link #realtimeLightBlockRevision()} before using the snapshot.
+     */
+    public RealtimeLightBlockSnapshot realtimeLightBlocks(RtContext ctx, boolean required) {
+        RtRealtimeLightBlocks.Snapshot value = required
+                ? realtimeLightTable.ensure(
+                        ctx, lightBlocks.values(), realtimeLightBlockRevision, blockX, blockY, blockZ)
+                : realtimeLightTable.current();
+        return new RealtimeLightBlockSnapshot(
+                value.address(), value.count(), value.totalWeight(), value.revision());
+    }
+
+    public long realtimeLightBlockRevision() {
+        return realtimeLightBlockRevision;
+    }
+
     /** Build or return the static-light list matching the currently published terrain scene. */
     public StaticLightSnapshot staticLights(RtContext ctx, boolean required) {
+        if (required) {
+            syncOfflineLightBlocks();
+        }
         RtStaticLights.Snapshot value = required
                 ? staticLights.ensure(ctx, resident.values(), lightOnly, table.capacity,
                         sceneRevision, blockX, blockY, blockZ)
@@ -371,7 +399,7 @@ public final class RtTerrain {
         // Evicted geometry lands in `removed` and is consumed by the next streaming pass's build kick.
         try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("terrain.windowSync")) {
             syncDesiredWindow(chunkSource, pcx, psy, pcz, r, loY, hiY, removed);
-            pruneLightOnly();
+            pruneLightBlocks();
         }
 
         // Re-extract edited sections. Drain under a short lock so concurrent block updates are not lost.
@@ -418,14 +446,18 @@ public final class RtTerrain {
         if (level == null || mc.player == null) {
             return;
         }
-        if (reextract.isEmpty() && missing.isEmpty()
-                && completedBuilds.isEmpty()
-                && removed.isEmpty() && prepared.isEmpty()) {
-            return;
-        }
         int pbx = mc.player.getBlockX();
         int pby = mc.player.getBlockY();
         int pbz = mc.player.getBlockZ();
+        boolean rebase = shouldRebase(pbx, pby, pbz);
+        boolean hasTerrainWork = !reextract.isEmpty()
+                || !missing.isEmpty()
+                || !completedBuilds.isEmpty()
+                || !removed.isEmpty()
+                || !prepared.isEmpty();
+        if (TerrainRebasePolicy.shouldReturnIdle(hasTerrainWork, rebase)) {
+            return;
+        }
         int pcx = pbx >> 4, pcz = pbz >> 4, psy = pby >> 4;
 
         ClientChunkCache chunkSource = level.getChunkSource();
@@ -435,9 +467,10 @@ public final class RtTerrain {
             drainCompletedBuilds(ctx, prepared, removed, completionResultsPerPass());
         }
 
-        if (!removed.isEmpty() || !prepared.isEmpty()) {
+        if (TerrainRebasePolicy.shouldApplyBuildChanges(
+                !prepared.isEmpty(), !removed.isEmpty(), rebase)) {
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("terrain.publish")) {
-                applyBuildChanges(ctx, prepared, removed, shouldRebase(pbx, pby, pbz), pbx, pby, pbz);
+                applyBuildChanges(ctx, prepared, removed, rebase, pbx, pby, pbz);
                 removed.clear();
                 prepared.clear();
             }
@@ -586,6 +619,7 @@ public final class RtTerrain {
             // snapshot can't be trusted past this point.
             snapshots.invalidate(key);
             desired.remove(key);
+            cancelOwnedDirtyGroup(key);
             clearQueuedWork(key, true);
             invalidateInFlight(key);
             empty.remove(key);
@@ -597,6 +631,7 @@ public final class RtTerrain {
     }
 
     private void pruneUndesired(List<SectionGeom> removed) {
+        cancelDirtyGroupsNotInDesired();
         for (ObjectIterator<Long2ObjectMap.Entry<SectionGeom>> it = resident.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
             Long2ObjectMap.Entry<SectionGeom> e = it.next();
             if (!desired.contains(e.getLongKey())) {
@@ -606,28 +641,28 @@ public final class RtTerrain {
         }
         removeKeysNotIn(empty, desired);
         removeInFlightNotIn(desired);
-        removeQueuedGroupsNotIn(desired);
     }
 
     private void handleDirtyEvent(DirtyEvent event) {
-        int groupMembers = 0;
+        LongArrayList groupKeys = new LongArrayList();
         for (LongIterator it = event.keys().iterator(); it.hasNext(); ) {
-            if (canGroupDirtySection(it.nextLong())) {
-                groupMembers++;
+            long key = it.nextLong();
+            if (canGroupDirtySection(key)) {
+                groupKeys.add(key);
             }
         }
 
         long groupId = NO_DIRTY_GROUP;
-        if (groupMembers > 1) {
+        if (groupKeys.size() > 1) {
             groupId = event.groupId();
-            dirtyGroups.put(groupId, new DirtyGroup(groupId, groupMembers, event.keys()));
+            dirtyGroups.put(groupId, new DirtyGroup(groupId, groupKeys));
         }
 
         for (LongIterator it = event.keys().iterator(); it.hasNext(); ) {
             long key = it.nextLong();
             long memberGroup = groupId != NO_DIRTY_GROUP
                     && dirtyGroups.containsKey(groupId)
-                    && canGroupDirtySection(key) ? groupId : NO_DIRTY_GROUP;
+                    && groupKeys.contains(key) ? groupId : NO_DIRTY_GROUP;
             if (!handleDirtySection(key, memberGroup) && memberGroup != NO_DIRTY_GROUP) {
                 cancelDirtyGroup(memberGroup);
             }
@@ -635,18 +670,16 @@ public final class RtTerrain {
     }
 
     private boolean canGroupDirtySection(long key) {
-        return desired.contains(key) && (resident.containsKey(key) || empty.contains(key));
+        return desired.contains(key)
+                && (resident.containsKey(key)
+                || empty.contains(key)
+                || dirtyGroupOwnership.ownerOf(key) != NO_DIRTY_GROUP);
     }
 
     private boolean handleDirtySection(long key, long dirtyGroup) {
         snapshots.invalidate(key); // block data changed — the cached palette snapshot is stale
-        boolean wasEmpty = empty.remove(key);
-        if (wasEmpty && dirtyGroup != NO_DIRTY_GROUP) {
-            DirtyGroup group = dirtyGroups.get(dirtyGroup);
-            if (group != null) {
-                group.restoreEmptyKeys.add(key);
-            }
-        }
+        cancelOwnedDirtyGroup(key);
+        empty.remove(key);
         invalidateInFlight(key); // invalidate any in-flight build of the now-stale section
         if (!desired.contains(key)) {
             clearQueuedWork(key, true);
@@ -674,6 +707,10 @@ public final class RtTerrain {
             return false;
         }
         setQueuedGroup(key, NO_DIRTY_GROUP);
+        // Cancelling an older staged generation can requeue this same desired key.
+        if (missingIndex.get(key) != NO_MISSING_INDEX) {
+            return false;
+        }
         missingIndex.put(key, missing.size());
         missing.add(key);
         return true;
@@ -700,14 +737,19 @@ public final class RtTerrain {
     }
 
     private void setQueuedGroup(long key, long groupId) {
-        long oldGroup = groupId == NO_DIRTY_GROUP ? queuedDirtyGroup.remove(key) : queuedDirtyGroup.put(key, groupId);
+        long oldGroup = dirtyGroupOwnership.ownerOf(key);
         if (oldGroup != NO_DIRTY_GROUP && oldGroup != groupId) {
             cancelDirtyGroup(oldGroup);
+        }
+        if (groupId != NO_DIRTY_GROUP
+                && dirtyGroups.containsKey(groupId)
+                && dirtyGroupOwnership.ownerOf(key) == NO_DIRTY_GROUP) {
+            dirtyGroupOwnership.queue(key, groupId);
         }
     }
 
     private void clearQueuedGroup(long key, boolean cancelGroup) {
-        long groupId = queuedDirtyGroup.remove(key);
+        long groupId = dirtyGroupOwnership.ownerOf(key);
         if (cancelGroup && groupId != NO_DIRTY_GROUP) {
             cancelDirtyGroup(groupId);
         }
@@ -735,34 +777,22 @@ public final class RtTerrain {
 
     private void invalidateInFlight(long key) {
         long token = inFlight.remove(key);
-        long groupId = inFlightDirtyGroup.remove(key);
+        long groupId = dirtyGroupOwnership.ownerOf(key);
         if (token != NO_TESS_TOKEN && groupId != NO_DIRTY_GROUP) {
             cancelDirtyGroup(groupId);
         }
     }
 
     private void removeInFlightNotIn(LongOpenHashSet keep) {
+        LongArrayList cancelGroups = new LongArrayList();
         for (LongIterator it = inFlight.keySet().iterator(); it.hasNext(); ) {
             long key = it.nextLong();
             if (!keep.contains(key)) {
-                it.remove();
-                long groupId = inFlightDirtyGroup.remove(key);
-                if (groupId != NO_DIRTY_GROUP) {
-                    cancelDirtyGroup(groupId);
-                }
-            }
-        }
-    }
-
-    private void removeQueuedGroupsNotIn(LongOpenHashSet keep) {
-        LongArrayList cancelGroups = new LongArrayList();
-        for (LongIterator it = queuedDirtyGroup.keySet().iterator(); it.hasNext(); ) {
-            long key = it.nextLong();
-            if (!keep.contains(key)) {
-                long groupId = queuedDirtyGroup.get(key);
-                it.remove();
+                long groupId = dirtyGroupOwnership.ownerOf(key);
                 if (groupId != NO_DIRTY_GROUP) {
                     cancelGroups.add(groupId);
+                } else {
+                    it.remove();
                 }
             }
         }
@@ -828,19 +858,83 @@ public final class RtTerrain {
         }
     }
 
-    private void pruneLightOnly() {
+    private void pruneLightBlocks() {
         boolean changed = false;
-        for (ObjectIterator<Long2ObjectMap.Entry<CpuLight[]>> it =
-             lightOnly.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
+        for (ObjectIterator<Long2ObjectMap.Entry<Source[]>> it =
+             lightBlocks.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
             if (!desired.contains(it.next().getLongKey())) {
                 it.remove();
                 changed = true;
             }
         }
         if (changed) {
-            sceneRevision++;
-            staticLights.invalidate();
+            realtimeLightBlocksChanged();
         }
+    }
+
+    /** Convert preserved sources only while assembling the existing offline static-light sidecar. */
+    private void syncOfflineLightBlocks() {
+        if (offlineLightBlockRevision == realtimeLightBlockRevision) {
+            return;
+        }
+        lightOnly.clear();
+        for (Long2ObjectMap.Entry<Source[]> section : lightBlocks.long2ObjectEntrySet()) {
+            Source[] sources = section.getValue();
+            ArrayList<CpuLight> points = new ArrayList<>(sources.length);
+            for (Source source : sources) {
+                if (source.level() > 0) {
+                    points.add(CpuLight.point(source.x(), source.y(), source.z(), source.level()));
+                }
+            }
+            if (!points.isEmpty()) {
+                lightOnly.put(section.getLongKey(), points.toArray(CpuLight[]::new));
+            }
+        }
+        offlineLightBlockRevision = realtimeLightBlockRevision;
+    }
+
+    private void applyLightBlockChanges(long key, Source[] sources) {
+        Source[] next = sources.length == 0 ? NO_LIGHT_BLOCKS : sources;
+        Source[] previous = lightBlocks.get(key);
+        if (RealtimeLightBlockIndex.sameSources(previous == null ? NO_LIGHT_BLOCKS : previous, next)) {
+            return;
+        }
+        if (next.length == 0) {
+            lightBlocks.remove(key);
+        } else {
+            lightBlocks.put(key, next);
+        }
+        realtimeLightBlocksChanged();
+    }
+
+    private void applyLightBlockChanges(Long2ObjectOpenHashMap<Source[]> staged) {
+        boolean changed = false;
+        for (Long2ObjectMap.Entry<Source[]> entry : staged.long2ObjectEntrySet()) {
+            if (!desired.contains(entry.getLongKey())) {
+                continue;
+            }
+            Source[] next = entry.getValue().length == 0 ? NO_LIGHT_BLOCKS : entry.getValue();
+            Source[] previous = lightBlocks.get(entry.getLongKey());
+            if (RealtimeLightBlockIndex.sameSources(previous == null ? NO_LIGHT_BLOCKS : previous, next)) {
+                continue;
+            }
+            if (next.length == 0) {
+                lightBlocks.remove(entry.getLongKey());
+            } else {
+                lightBlocks.put(entry.getLongKey(), next);
+            }
+            changed = true;
+        }
+        if (changed) {
+            realtimeLightBlocksChanged();
+        }
+    }
+
+    private void realtimeLightBlocksChanged() {
+        realtimeLightBlockRevision++;
+        offlineLightBlockRevision = Long.MIN_VALUE;
+        sceneRevision++;
+        staticLights.invalidate();
     }
 
     /**
@@ -1039,11 +1133,18 @@ public final class RtTerrain {
         RtFrameStats.FRAME.count("sectionsSnapshotted", 1);
         RtSectionSnapshots.Region region = snapshots.createRegion(dispatch.level(), sx, sy, sz);
         long token = ++buildToken;
-        long dirtyGroup = queuedDirtyGroup.remove(key);
+        long dirtyGroup = dirtyGroupOwnership.ownerOf(key);
         if (dirtyGroup != NO_DIRTY_GROUP && !dirtyGroups.containsKey(dirtyGroup)) {
-            dirtyGroup = NO_DIRTY_GROUP;
+            throw new IllegalStateException("queued RT terrain section has inactive dirty generation "
+                    + dirtyGroup);
         }
         SectionTask task = new SectionTask(key, token, sx << 4, sy << 4, sz << 4, dirtyGroup);
+        inFlight.put(key, token);
+        if (dirtyGroup != NO_DIRTY_GROUP
+                && !dirtyGroupOwnership.markInFlight(key, dirtyGroup, token)) {
+            inFlight.remove(key);
+            throw new IllegalStateException("queued RT terrain section lost dirty generation ownership");
+        }
         beginActiveTask();
         try {
             RtWorkerPool.INSTANCE.submit(() -> {
@@ -1056,7 +1157,7 @@ public final class RtTerrain {
                             fluidRenderer, ws.fluidCapture, ws.mesh, ws.pos, sx, sy, sz);
                     PackedSection packed = cpu.packed();
                     if (packed == null) {
-                        completeTask(task, null, null, null, cpu.lightOnly());
+                        completeTask(task, null, null, null, cpu.lightBlocks());
                     } else {
                         PreparedSection prepared = RtSectionBuilder.prepare(dispatch.ctx(), packed,
                                 cpu.opacityMicromap(), task.key, task.sox, task.soy, task.soz);
@@ -1064,32 +1165,30 @@ public final class RtTerrain {
                             dispatch.ctx().gpuExecutor().submit(
                                     cmd -> RtAccel.recordBlasBuilds(dispatch.ctx(), cmd, List.of(prepared.blas())),
                                     () -> RtAccel.freeBlasScratch(List.of(prepared.blas())),
-                                    (build, failure) -> completeTask(task, prepared, build, failure, new CpuLight[0]));
+                                    (build, failure) -> completeTask(task, prepared, build, failure, cpu.lightBlocks()));
                         } catch (Throwable t) {
                             RtSectionBuilder.destroy(prepared);
                             throw t;
                         }
                     }
                 } catch (Throwable t) {
-                    completeTask(task, null, null, t, new CpuLight[0]);
+                    completeTask(task, null, null, t, NO_LIGHT_BLOCKS);
                     throw t;
                 }
             });
         } catch (Throwable t) {
+            inFlight.remove(key);
+            if (dirtyGroup != NO_DIRTY_GROUP) {
+                cancelDirtyGroup(dirtyGroup);
+            }
             finishActiveTask();
             throw t;
-        }
-        inFlight.put(key, token);
-        if (dirtyGroup != NO_DIRTY_GROUP) {
-            inFlightDirtyGroup.put(key, dirtyGroup);
-        } else {
-            inFlightDirtyGroup.remove(key);
         }
     }
 
     private void completeTask(SectionTask task, PreparedSection prepared, RtGpuExecutor.Build build,
-                              Throwable failure, CpuLight[] lightOnly) {
-        completeTask(new SectionResult(task, prepared, build, failure, lightOnly));
+                               Throwable failure, Source[] lightBlocks) {
+        completeTask(new SectionResult(task, prepared, build, failure, lightBlocks));
     }
 
     private void completeTask(SectionResult result) {
@@ -1145,13 +1244,20 @@ public final class RtTerrain {
             }
             SectionTask task = result.task();
             long expected = inFlight.get(task.key);
+            long dirtyGroup = task.dirtyGroup;
             boolean valid = expected == task.token;
+            if (valid && dirtyGroup != NO_DIRTY_GROUP) {
+                valid = dirtyGroups.containsKey(dirtyGroup)
+                        && dirtyGroupOwnership.stage(task.key, dirtyGroup, task.token);
+            }
             if (!valid) {
+                if (expected == task.token) {
+                    inFlight.remove(task.key);
+                }
                 destroyCompletedResult(ctx, result);
                 continue; // stale result; a newer dispatch (or none) supersedes it
             }
             inFlight.remove(task.key);
-            long dirtyGroup = inFlightDirtyGroup.remove(task.key);
             if (result.failure() != null) {
                 if (result.prepared() != null) {
                     destroyPreparedSection(result.prepared());
@@ -1164,21 +1270,6 @@ public final class RtTerrain {
                         result.failure());
             }
             PreparedSection built = result.prepared();
-            CpuLight[] pointLights = result.lightOnly();
-            if (built != null) {
-                if (lightOnly.remove(task.key) != null) {
-                    sceneRevision++;
-                    staticLights.invalidate();
-                }
-            } else {
-                CpuLight[] previous = pointLights.length == 0
-                        ? lightOnly.remove(task.key)
-                        : lightOnly.put(task.key, pointLights);
-                if (previous != pointLights) {
-                    sceneRevision++;
-                    staticLights.invalidate();
-                }
-            }
             if (built != null) {
                 try {
                     RtSectionBuilder.resolveMaterials(built);
@@ -1193,15 +1284,10 @@ public final class RtTerrain {
                             + (task.sox >> 4) + "," + (task.soy >> 4) + "," + (task.soz >> 4), t);
                 }
             }
-            if (dirtyGroup != NO_DIRTY_GROUP && dirtyGroups.containsKey(dirtyGroup)) {
+            if (dirtyGroup != NO_DIRTY_GROUP) {
                 DirtyGroup group = dirtyGroups.get(dirtyGroup);
+                group.lightBlocks.put(task.key, result.lightBlocks());
                 if (built == null) {
-                    SectionGeom prev = resident.get(task.key);
-                    if (prev != null) {
-                        group.removed.add(prev);
-                    } else {
-                        group.restoreEmptyKeys.add(task.key);
-                    }
                     group.emptyKeys.add(task.key);
                 } else {
                     empty.remove(task.key);
@@ -1210,6 +1296,7 @@ public final class RtTerrain {
                 completeDirtyGroupMember(group, prepared, removed);
                 remaining--;
             } else {
+                applyLightBlockChanges(task.key, result.lightBlocks());
                 if (built == null) {
                     // Legitimately empty (air or fully-enclosed). If this was an in-place re-extract whose new
                     // state is empty, evict the old geom and retire it in this publish pass.
@@ -1239,11 +1326,31 @@ public final class RtTerrain {
         if (--group.remaining > 0) {
             return;
         }
+        if (!dirtyGroupOwnership.releaseForPublication(
+                group.id, group.keys.toLongArray(), desired::contains)) {
+            cancelDirtyGroup(group.id);
+            return;
+        }
         dirtyGroups.remove(group.id);
-        prepared.addAll(group.prepared);
-        removed.addAll(group.removed);
+        applyLightBlockChanges(group.lightBlocks);
+        for (PreparedSection section : group.prepared) {
+            if (desired.contains(section.key()) && group.keys.contains(section.key())) {
+                prepared.add(section);
+            } else {
+                destroyPreparedSection(section);
+            }
+        }
+        group.prepared.clear();
         for (LongIterator it = group.emptyKeys.iterator(); it.hasNext(); ) {
-            empty.add(it.nextLong());
+            long key = it.nextLong();
+            if (!desired.contains(key) || !group.keys.contains(key)) {
+                continue;
+            }
+            SectionGeom previous = resident.remove(key);
+            if (previous != null) {
+                removed.add(previous);
+            }
+            empty.add(key);
         }
     }
 
@@ -1252,24 +1359,62 @@ public final class RtTerrain {
         if (group == null) {
             return;
         }
+        List<DirtyGroupGenerationOwnership.Member> cancelled =
+                dirtyGroupOwnership.cancelGeneration(groupId);
         for (PreparedSection ps : group.prepared) {
             destroyPreparedSection(ps);
         }
-        for (LongIterator it = group.restoreEmptyKeys.iterator(); it.hasNext(); ) {
-            long key = it.nextLong();
-            if (desired.contains(key) && !resident.containsKey(key) && !inFlight.containsKey(key) && !isQueuedAnywhere(key)) {
-                empty.add(key);
+        group.prepared.clear();
+        for (DirtyGroupGenerationOwnership.Member member : cancelled) {
+            if (member.phase() == DirtyGroupGenerationOwnership.Phase.IN_FLIGHT
+                    && inFlight.get(member.sectionKey()) == member.token()) {
+                inFlight.remove(member.sectionKey());
             }
         }
         for (LongIterator it = group.keys.iterator(); it.hasNext(); ) {
             long key = it.nextLong();
-            if (queuedDirtyGroup.get(key) == groupId) {
-                queuedDirtyGroup.remove(key);
-            }
-            if (inFlightDirtyGroup.get(key) == groupId) {
-                inFlightDirtyGroup.remove(key);
+            requeueCancelledGroupMember(key);
+        }
+    }
+
+    private void cancelOwnedDirtyGroup(long key) {
+        long groupId = dirtyGroupOwnership.ownerOf(key);
+        if (groupId != NO_DIRTY_GROUP) {
+            cancelDirtyGroup(groupId);
+        }
+    }
+
+    private void cancelDirtyGroupsNotInDesired() {
+        LongOpenHashSet cancel = new LongOpenHashSet();
+        for (DirtyGroup group : dirtyGroups.values()) {
+            for (LongIterator it = group.keys.iterator(); it.hasNext(); ) {
+                if (!desired.contains(it.nextLong())) {
+                    cancel.add(group.id);
+                    break;
+                }
             }
         }
+        for (LongIterator it = cancel.iterator(); it.hasNext(); ) {
+            cancelDirtyGroup(it.nextLong());
+        }
+    }
+
+    private void requeueCancelledGroupMember(long key) {
+        if (!desired.contains(key)) {
+            return;
+        }
+        empty.remove(key);
+        if (inFlight.containsKey(key) || isQueuedAnywhere(key)) {
+            return;
+        }
+        if (resident.containsKey(key)) {
+            if (queuedReextract.add(key)) {
+                reextract.add(key);
+            }
+            return;
+        }
+        missingIndex.put(key, missing.size());
+        missing.add(key);
     }
 
     private void cancelAllDirtyGroups() {
@@ -1282,8 +1427,7 @@ public final class RtTerrain {
             }
         }
         dirtyGroups.clear();
-        queuedDirtyGroup.clear();
-        inFlightDirtyGroup.clear();
+        dirtyGroupOwnership.clear();
     }
 
     private void destroyPreparedSection(PreparedSection ps) {
@@ -1307,15 +1451,14 @@ public final class RtTerrain {
         final long id;
         final LongArrayList keys;
         final ArrayList<PreparedSection> prepared = new ArrayList<>();
-        final ArrayList<SectionGeom> removed = new ArrayList<>();
+        final Long2ObjectOpenHashMap<Source[]> lightBlocks = new Long2ObjectOpenHashMap<>();
         final LongArrayList emptyKeys = new LongArrayList();
-        final LongArrayList restoreEmptyKeys = new LongArrayList();
         int remaining;
 
-        DirtyGroup(long id, int remaining, LongArrayList keys) {
+        DirtyGroup(long id, LongArrayList keys) {
             this.id = id;
-            this.remaining = remaining;
             this.keys = new LongArrayList(keys);
+            this.remaining = keys.size();
         }
     }
 
@@ -1338,7 +1481,7 @@ public final class RtTerrain {
     }
 
     private record SectionResult(SectionTask task, PreparedSection prepared,
-                                 RtGpuExecutor.Build build, Throwable failure, CpuLight[] lightOnly) {
+                                  RtGpuExecutor.Build build, Throwable failure, Source[] lightBlocks) {
     }
 
     private boolean shouldRebase(int rbx, int rby, int rbz) {
@@ -1404,6 +1547,26 @@ public final class RtTerrain {
         }
         table.flushWrites();
 
+        if (rebase) {
+            for (int i = 0, n = table.instanceList.size(); i < n; i++) {
+                RtAccel.Instance inst = table.instanceList.get(i);
+                SectionGeom g = table.slots.get(inst.customIndex());
+                table.instanceList.set(i, table.instanceFor(g, baseX, baseY, baseZ));
+            }
+            long previousRealtimeLightRevision = realtimeLightBlockRevision;
+            TerrainRebasePolicy.State rebaseState = TerrainRebasePolicy.applyRebase(
+                    new TerrainRebasePolicy.State(
+                            blockX, blockY, blockZ, realtimeLightBlockRevision),
+                    rbx, rby, rbz, rebase, !lightBlocks.isEmpty());
+            blockX = rebaseState.blockX();
+            blockY = rebaseState.blockY();
+            blockZ = rebaseState.blockZ();
+            realtimeLightBlockRevision = rebaseState.realtimeLightRevision();
+            if (realtimeLightBlockRevision != previousRealtimeLightRevision) {
+                offlineLightBlockRevision = Long.MIN_VALUE;
+            }
+        }
+
         if (resident.isEmpty()) {
             Generation emptyGeneration = table.detachGeneration();
             if (emptyGeneration != null) {
@@ -1424,12 +1587,6 @@ public final class RtTerrain {
                 g.instanceIndex = -1;
                 g.slot = -1;
             }
-            for (DirtyGroup group : dirtyGroups.values()) {
-                for (SectionGeom g : group.removed) {
-                    g.instanceIndex = -1;
-                    g.slot = -1;
-                }
-            }
             // Zero resident sections (e.g. every section just evicted on a respawn) is a transient
             // streaming state, not "no world" — keep tracing (sky/entities only) instead of handing the
             // frame back to vanilla; see ensureEmptyTableReady.
@@ -1437,16 +1594,6 @@ public final class RtTerrain {
             return;
         }
 
-        if (rebase) {
-            for (int i = 0, n = table.instanceList.size(); i < n; i++) {
-                RtAccel.Instance inst = table.instanceList.get(i);
-                SectionGeom g = table.slots.get(inst.customIndex());
-                table.instanceList.set(i, table.instanceFor(g, baseX, baseY, baseZ));
-            }
-            blockX = rbx;
-            blockY = rby;
-            blockZ = rbz;
-        }
         table.instances = table.instanceList;
         ready = true;
     }
@@ -1486,7 +1633,6 @@ public final class RtTerrain {
             }
         }
         inFlight.clear();
-        inFlightDirtyGroup.clear();
         if (failure != null) {
             throw new RuntimeException("RT terrain worker/build failed during teardown", failure);
         }
@@ -1502,6 +1648,7 @@ public final class RtTerrain {
         } else {
             ctx.gpuExecutor().waitForLatestGraphicsAndFlush();
         }
+        realtimeLightTable.destroy();
         table.destroyRecycledGenerations();
         snapshots.clear();
         synchronized (dirtyLock) {
@@ -1516,11 +1663,13 @@ public final class RtTerrain {
         loadedColumns.clear();
         missing.clear();
         missingIndex.clear();
-        queuedDirtyGroup.clear();
         reextract.clear();
         queuedReextract.clear();
         windowValid = false;
         lightOnly.clear();
+        lightBlocks.clear();
+        realtimeLightBlockRevision = 0L;
+        offlineLightBlockRevision = Long.MIN_VALUE;
         staticLights.destroy();
         if (resident.isEmpty() && table.buffer == null && removed.isEmpty() && prepared.isEmpty()) {
             empty.clear();

@@ -47,6 +47,7 @@ public final class RtOfflineAccumulationPipeline {
     private long boundCurrentView;
     private long boundHistoryView;
     private long boundResolvedView;
+    private long boundMomentView;
     private boolean destroyed;
 
     private RtOfflineAccumulationPipeline(RtContext ctx, long descriptorSetLayout,
@@ -63,7 +64,7 @@ public final class RtOfflineAccumulationPipeline {
     public static RtOfflineAccumulationPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(3, stack);
+            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(4, stack);
             for (int i = 0; i < bindings.capacity(); i++) {
                 bindings.get(i).binding(i)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -81,7 +82,7 @@ public final class RtOfflineAccumulationPipeline {
                     descriptorSetLayout, "offline accumulation descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(3);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(4);
             VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
                     .sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, poolInfo, null, handle),
@@ -138,25 +139,28 @@ public final class RtOfflineAccumulationPipeline {
         }
     }
 
-    public void setImages(long currentView, long historyView, long resolvedView) {
+    public void setImages(long currentView, long historyView, long resolvedView, long momentView) {
         if (boundCurrentView == currentView
                 && boundHistoryView == historyView
-                && boundResolvedView == resolvedView) {
+                && boundResolvedView == resolvedView
+                && boundMomentView == momentView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer currentInfo = imageInfo(stack, currentView);
             VkDescriptorImageInfo.Buffer historyInfo = imageInfo(stack, historyView);
             VkDescriptorImageInfo.Buffer resolvedInfo = imageInfo(stack, resolvedView);
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
             writeStorageImage(writes.get(0), descriptorSet, 0, currentInfo);
             writeStorageImage(writes.get(1), descriptorSet, 1, historyInfo);
             writeStorageImage(writes.get(2), descriptorSet, 2, resolvedInfo);
+            writeStorageImage(writes.get(3), descriptorSet, 3, imageInfo(stack, momentView));
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundCurrentView = currentView;
         boundHistoryView = historyView;
         boundResolvedView = resolvedView;
+        boundMomentView = momentView;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height,

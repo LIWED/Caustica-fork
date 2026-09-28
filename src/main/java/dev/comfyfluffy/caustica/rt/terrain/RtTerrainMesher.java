@@ -13,6 +13,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtMaterials;
+import dev.comfyfluffy.caustica.rt.light.RealtimeLightBlockIndex;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
@@ -96,14 +97,16 @@ final class RtTerrainMesher {
                                               FluidRenderer fluidRenderer, FluidCapture fluidCapture,
                                               SectionMesh mesh, BlockPos.MutableBlockPos m, int scx, int scy, int scz) {
         tessellate(region, modelSet, renderer, capture, fluidRenderer, fluidCapture, mesh, m, scx, scy, scz);
+        RealtimeLightBlockIndex.Source[] lightBlocks =
+                mesh.lightBlocks.toArray(RealtimeLightBlockIndex.Source[]::new);
         if (mesh.isEmpty()) {
-            return new CpuSection(null, null, mesh.pointLights.toArray(CpuLight[]::new));
+            return new CpuSection(null, null, lightBlocks);
         }
         Geom cutout = mesh.cutoutOrEmpty();
         RtAccel.OpacityMicromapInput ommInput =
                 RtTerrainOmm.buildInput(cutout.triCount(), cutout.cornerUv.elements(),
                         cutout.ommSprites.elements(), cutout.ommSprites.size());
-        return new CpuSection(packSection(mesh), ommInput, new CpuLight[0]);
+        return new CpuSection(packSection(mesh), ommInput, lightBlocks);
     }
 
     private static PackedSection packSection(SectionMesh mesh) {
@@ -124,7 +127,7 @@ final class RtTerrainMesher {
         float[] uvs = new float[uvFloats];
         float[] material = new float[primFloats];
         TextureAtlasSprite[] materialSprites = new TextureAtlasSprite[triCount];
-        ArrayList<CpuLight> staticLights = new ArrayList<>(mesh.pointLights);
+        ArrayList<CpuLight> staticLights = new ArrayList<>();
         int[] triBase = new int[buckets.length];
         int posOff = 0, idxOff = 0, uvOff = 0, matOff = 0, spriteOff = 0, vertBase = 0, triAcc = 0;
         for (int b = 0; b < buckets.length; b++) {
@@ -182,9 +185,8 @@ final class RtTerrainMesher {
                     // RenderShape filter below. It remains invisible and contributes only direct light.
                     if (state.is(Blocks.LIGHT)) {
                         int level = state.getLightEmission();
-                        if (level > 0) {
-                            mesh.pointLights.add(CpuLight.point(wx + 0.5f, wy + 0.5f, wz + 0.5f, level));
-                        }
+                        mesh.lightBlocks.add(new RealtimeLightBlockIndex.Source(
+                                wx + 0.5f, wy + 0.5f, wz + 0.5f, level));
                     }
                     // Fluids (water/lava, incl. waterlogged blocks): separate mesher, INVISIBLE render
                     // shape, so handled independently of the block model below. Emits section-local
@@ -217,7 +219,7 @@ final class RtTerrainMesher {
 
     /** Pure-CPU worker result: tessellated mesh plus optional opacity micromap input for its cutout bucket. */
     record CpuSection(PackedSection packed, RtAccel.OpacityMicromapInput opacityMicromap,
-                      CpuLight[] lightOnly) {
+                      RealtimeLightBlockIndex.Source[] lightBlocks) {
     }
 
     /** Worker-packed terrain payload; native preparation allocates buffers and bulk-copies these arrays. */
@@ -348,7 +350,7 @@ final class RtTerrainMesher {
         Geom translucent;
         Geom water;
         private final Geom[] buckets = new Geom[RtAccel.TERRAIN_BUCKETS];
-        final ArrayList<CpuLight> pointLights = new ArrayList<>();
+        final ArrayList<RealtimeLightBlockIndex.Source> lightBlocks = new ArrayList<>();
 
         Geom[] buckets() {
             buckets[RtAccel.BUCKET_SOLID] = geomOrEmpty(opaque);
@@ -395,7 +397,7 @@ final class RtTerrainMesher {
             resetGeom(cutout);
             resetGeom(translucent);
             resetGeom(water);
-            pointLights.clear();
+            lightBlocks.clear();
         }
 
         private static void resetGeom(Geom geom) {

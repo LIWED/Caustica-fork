@@ -2,6 +2,7 @@
 param(
     [switch] $CheckOnly,
     [switch] $SkipNative,
+    [switch] $SkipDeploy,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $GradleArgs = @()
@@ -9,6 +10,34 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Test-ShouldDeploy {
+    param([string[]] $Arguments)
+
+    $packagingRequested = $false
+    $valueOptions = @('-P', '--project-prop', '-D', '--system-prop', '-g', '--gradle-user-home', '-I', '--init-script', '--include-build', '--console', '--warning-mode', '--max-workers', '--priority', '--project-cache-dir', '--configuration-cache-problems', '--dependency-verification', '--write-verification-metadata')
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $argument = $Arguments[$index]
+        if ($argument -in @('--dry-run', '-m', '--help', '-h', '-?', '--version', '-v')) { return $false }
+        # A different project/build definition cannot establish that this project's JAR was built.
+        if ($argument -cmatch '^(?:-p|-c|-b)(?:.*)$|^--(?:project-dir|settings-file|build-file)(?:=|$)') { return $false }
+        if ($argument -in @('-x', '--exclude-task') -or $argument.StartsWith('--exclude-task=') -or $argument.StartsWith('-x')) {
+            if ($argument.StartsWith('--exclude-task=')) { $excluded = $argument.Substring('--exclude-task='.Length) }
+            elseif ($argument.StartsWith('-x') -and $argument.Length -gt 2) { $excluded = $argument.Substring(2) }
+            else {
+                $index++
+                if ($index -ge $Arguments.Count) { return $false }
+                $excluded = $Arguments[$index]
+            }
+            if (($excluded -split ':')[-1] -in @('build', 'assemble', 'jar')) { return $false }
+            continue
+        }
+        if ($argument -cin $valueOptions) { $index++; continue }
+        if ($argument.StartsWith('-')) { continue }
+        if ($argument -cin @('build', 'assemble', 'jar', ':build', ':assemble', ':jar')) { $packagingRequested = $true }
+    }
+    return $packagingRequested
+}
 
 function Require-Path {
     param(
@@ -211,6 +240,11 @@ try {
     & $localGradle @effectiveGradleArgs
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
+    }
+
+    if (-not $SkipDeploy -and (Test-ShouldDeploy -Arguments $effectiveGradleArgs)) {
+        Write-Host 'Deploying Caustica to the test Minecraft mods directory...'
+        & (Join-Path $PSScriptRoot 'deploy_test_mod.ps1')
     }
 }
 finally {
