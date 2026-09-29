@@ -1228,7 +1228,11 @@ public final class RtComposite {
         float cloudHeight = probe.getValue(EnvironmentAttributes.CLOUD_HEIGHT, partial);
         Float3 fogColor = linearColor(packedFog);
         Float3 cloudColor = linearColor(packedCloud);
-        float weatherBlend = Mth.clamp(rain * 0.65f + thunder * 0.35f, 0.0f, 1.0f);
+        // Cap the cloud-colour share hard. weatherColor also drives the air fog's radiance (air_volume),
+        // and CLOUD_COLOR goes near-black in a thunderstorm, so a full blend erased the fog exactly when
+        // the weather should be thickest. The extra darkening for rain/thunder comes from the
+        // cover-driven term in the cloud shader instead, which does not touch the fog.
+        float weatherBlend = Mth.clamp(rain * 0.65f + thunder * 0.35f, 0.0f, 1.0f) * 0.4f;
         Float4 weather = new Float4(rain, thunder, lightningFlash, cloudTime);
         Float4 weatherColor = new Float4(
                 Mth.lerp(weatherBlend, fogColor.x(), cloudColor.x()),
