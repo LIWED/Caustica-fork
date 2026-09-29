@@ -31,8 +31,17 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 /** Compute pass that maps the display-res HDR RT image into an LDR image compatible with the main target. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    /** HDR settings plus depth-of-field controls and the current projection's depth terms. */
-    private static final int PUSH_BYTES = 10 * Integer.BYTES;
+    /**
+     * HDR settings, depth-of-field controls, the current projection's depth terms and the temporal
+     * accumulation state: the original 40 bytes of scalars plus the accumulation flags and the motion
+     * scale (mirrors {@code Push} in display.comp). Reprojection consumes the motion-vector image
+     * instead of taking matrices, which keeps the block small.
+     */
+    private static final int PUSH_BYTES = 56;
+    /** Byte offsets of the fields appended after the original 40-byte block. */
+    private static final int PUSH_TEMPORAL_ENABLED = 40;
+    private static final int PUSH_FRAME_INDEX = 44;
+    private static final int PUSH_MOTION_SCALE = 48;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -45,6 +54,9 @@ public final class RtDisplayPipeline {
     private long boundExposureView;
     private long boundHdrView;
     private long boundDepthView;
+    private long boundHistoryView;
+    private long boundHistoryOutView;
+    private long boundMotionView;
     private boolean bindingsDirty = true;
     private boolean destroyed;
 
@@ -60,7 +72,7 @@ public final class RtDisplayPipeline {
     public static RtDisplayPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(8, stack);
             binds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -71,6 +83,14 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(4).binding(4).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            // Temporal accumulation history: read this frame, write the next frame's slot.
+            binds.get(5).binding(5).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(6).binding(6).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            // Render-res motion vectors, shared with DLSS-RR, used to reproject the history.
+            binds.get(7).binding(7).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -79,7 +99,7 @@ public final class RtDisplayPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "display descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(5);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(8);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             long pool = p.get(0);
@@ -117,10 +137,13 @@ public final class RtDisplayPipeline {
     }
 
     public void setImages(long outputImageView, long rtImageView, long exposureImageView,
-                          long hdrImageView, long depthImageView) {
+                          long hdrImageView, long depthImageView,
+                          long historyImageView, long historyOutImageView, long motionImageView) {
         if (!bindingsDirty && boundOutputView == outputImageView && boundRtView == rtImageView
                 && boundExposureView == exposureImageView && boundHdrView == hdrImageView
-                && boundDepthView == depthImageView) {
+                && boundDepthView == depthImageView
+                && boundHistoryView == historyImageView && boundHistoryOutView == historyOutImageView
+                && boundMotionView == motionImageView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -134,8 +157,14 @@ public final class RtDisplayPipeline {
             hdrInfo.get(0).imageView(hdrImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
             depthInfo.get(0).imageView(depthImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer historyInfo = VkDescriptorImageInfo.calloc(1, stack);
+            historyInfo.get(0).imageView(historyImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer historyOutInfo = VkDescriptorImageInfo.calloc(1, stack);
+            historyOutInfo.get(0).imageView(historyOutImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer motionInfo = VkDescriptorImageInfo.calloc(1, stack);
+            motionInfo.get(0).imageView(motionImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(8, stack);
             writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
             writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1)
@@ -146,6 +175,12 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(hdrInfo);
             writes.get(4).sType$Default().dstSet(descriptorSet).dstBinding(4)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(depthInfo);
+            writes.get(5).sType$Default().dstSet(descriptorSet).dstBinding(5)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(historyInfo);
+            writes.get(6).sType$Default().dstSet(descriptorSet).dstBinding(6)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(historyOutInfo);
+            writes.get(7).sType$Default().dstSet(descriptorSet).dstBinding(7)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(motionInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
@@ -153,6 +188,9 @@ public final class RtDisplayPipeline {
         boundExposureView = exposureImageView;
         boundHdrView = hdrImageView;
         boundDepthView = depthImageView;
+        boundHistoryView = historyImageView;
+        boundHistoryOutView = historyOutImageView;
+        boundMotionView = motionImageView;
         bindingsDirty = false;
     }
 
@@ -169,7 +207,8 @@ public final class RtDisplayPipeline {
                          float paperWhiteNits, float headroom, boolean depthOfField,
                          float depthOfFieldStrength, int depthOfFieldQuality, int depthOfFieldMode,
                          float depthOfFieldFocusDepth, float depthOfFieldFarDepth,
-                         int depthOfFieldForegroundQuality) {
+                         int depthOfFieldForegroundQuality, boolean temporalEnabled, int frameIndex,
+                         float motionScaleX, float motionScaleY) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
@@ -184,6 +223,10 @@ public final class RtDisplayPipeline {
             push.putFloat(28, depthOfFieldFocusDepth);
             push.putFloat(32, depthOfFieldFarDepth);
             push.putInt(36, depthOfFieldForegroundQuality);
+            push.putInt(PUSH_TEMPORAL_ENABLED, temporalEnabled ? 1 : 0);
+            push.putInt(PUSH_FRAME_INDEX, frameIndex);
+            push.putFloat(PUSH_MOTION_SCALE, motionScaleX);
+            push.putFloat(PUSH_MOTION_SCALE + Float.BYTES, motionScaleY);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

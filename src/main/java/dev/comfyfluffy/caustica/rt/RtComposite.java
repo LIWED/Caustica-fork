@@ -222,6 +222,19 @@ public final class RtComposite {
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
     // this image is blitted straight to the swapchain.
     private RtImage hdrDisplayImage;
+    // Depth-of-field temporal accumulation: two ping-pong buffers at display res holding
+    // rgb = resolved colour, a = the centre depth it was resolved with. display.comp reads one and
+    // writes the other, then they swap, so the pass never reads and writes the same image. Display res
+    // is the right size because the effect runs after DLSS-RR, on the already reconstructed image.
+    private RtImage dofHistoryImage;
+    private RtImage dofHistoryOutImage;
+    // False until a frame has actually written history (reset whenever the images are recreated or the
+    // world is rebuilt): the first dispatch after that must not blend against uninitialised contents.
+    private boolean dofHistoryValid;
+    // The reprojection matrices are not cached: display.comp takes this frame's inverted
+    // view-projection and the previous frame's view-projection as separate inputs, and both already
+    // exist here (frameInvViewProj, mvPushMatrix). They must not be pre-multiplied — the shader has to
+    // divide through the back-projected point before applying the camera delta.
     // Set true after this frame's display dispatch wrote hdrDisplayImage (HDR enabled + RT ran); gates the
     // HDR present blit so a frame where RT did not run falls back to the vanilla SDR present.
     private boolean hdrWrittenThisFrame;
@@ -754,6 +767,12 @@ public final class RtComposite {
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
         }
+        if (dofHistoryImage != null) {
+            dofHistoryImage.destroy();
+        }
+        if (dofHistoryOutImage != null) {
+            dofHistoryOutImage.destroy();
+        }
         if (output != null) {
             output.destroy();
         }
@@ -790,6 +809,10 @@ public final class RtComposite {
         displayImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
+        // DOF temporal accumulation ping-pong pair (rgb = colour, a = centre depth). HDR format so the
+        // blend happens in the same linear space the blur reads from, before tonemapping.
+        dofHistoryImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DOF history A " + width + "x" + height);
+        dofHistoryOutImage = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DOF history B " + width + "x" + height);
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImageDeferred(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
@@ -800,18 +823,20 @@ public final class RtComposite {
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImageDeferred(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         ctx.initializeStorageImages(output, displayImage, hdrDisplayImage, gNormal, gAlbedo,
-                gDepth, gMotion, gSpecAlbedo, gSpecMotion, rrOutput);
+                gDepth, gMotion, gSpecAlbedo, gSpecMotion, rrOutput, dofHistoryImage, dofHistoryOutImage);
         exposure.ensureResources(ctx);
         VulkanDiagnostics.logRtMemory(ctx, "new allocated");
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
+        dofHistoryValid = false; // fresh buffers hold nothing worth blending against
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view,
-                hdrDisplayImage.view, gDepth.view);
+                hdrDisplayImage.view, gDepth.view, dofHistoryImage.view, dofHistoryOutImage.view,
+                gMotion.view);
     }
 
     /**
@@ -1090,13 +1115,34 @@ public final class RtComposite {
                         ? (frameProjection.m22() * focusViewZ + frameProjection.m32()) / focusClipW : 0.0f;
                 float farDepth = Math.abs(frameProjection.m23()) > 1.0e-6f
                         ? frameProjection.m22() / frameProjection.m23() : 0.0f;
+                boolean dofEnabled = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD.value() && debugView() == 0;
+                // Temporal accumulation reads one history slot and writes the other, so the bindings have
+                // to be refreshed every frame rather than cached: the pass never reads and writes the
+                // same image, and the two swap after each dispatch.
+                RtImage historyRead = dofHistoryImage;
+                RtImage historyWrite = dofHistoryOutImage;
+                displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view,
+                        hdrDisplayImage.view, gDepth.view, historyRead.view, historyWrite.view,
+                        gMotion.view);
+                // Reprojection runs on the motion-vector image DLSS-RR itself consumes: those vectors
+                // come from the actual primary hit, so they carry object motion and no back-projection
+                // error. They are stored at render resolution, so pass the render -> display scale and
+                // let the shader convert. On the first frame after a reset the vectors are zero, so the
+                // reprojection is an identity and the depth test rejects its own history.
+                float motionScaleX = renderW > 0 ? (float) displayW / (float) renderW : 1f;
+                float motionScaleY = renderH > 0 ? (float) displayH / (float) renderH : 1f;
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom(),
-                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD.value() && debugView() == 0,
+                        dofEnabled,
                         CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_STRENGTH.value(),
                         CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_QUALITY.value(),
                         CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_MODE.value(), focusDepth, farDepth,
-                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOREGROUND_QUALITY.value());
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOREGROUND_QUALITY.value(),
+                        dofEnabled && dofHistoryValid, (int) frameCounter,
+                        motionScaleX, motionScaleY);
+                dofHistoryImage = historyWrite;
+                dofHistoryOutImage = historyRead;
+                dofHistoryValid = true;
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1361,6 +1407,14 @@ public final class RtComposite {
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
             hdrDisplayImage = null;
+        }
+        if (dofHistoryImage != null) {
+            dofHistoryImage.destroy();
+            dofHistoryImage = null;
+        }
+        if (dofHistoryOutImage != null) {
+            dofHistoryOutImage.destroy();
+            dofHistoryOutImage = null;
         }
         if (fgHudlessImage != null) {
             fgHudlessImage.destroy();

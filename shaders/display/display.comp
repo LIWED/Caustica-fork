@@ -7,6 +7,17 @@ layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // HDR R
 layout(binding = 2, set = 0, r32f) uniform readonly image2D exposureImage; // 1x1 linear exposure scale
 layout(binding = 3, set = 0, rgba16f) uniform writeonly image2D hdrImage; // PQ-encoded ([0,1], ST.2084) HDR display
 layout(binding = 4, set = 0, r32f) uniform readonly image2D depthImage; // render-res reversed-Z guide
+// Previous frame's accumulated result (rgb = colour, a = the centre depth it was resolved with) and
+// this frame's slot for it. Ping-ponged by the caller: never read and write the same image here.
+layout(binding = 5, set = 0, rgba16f) uniform readonly image2D historyImage;
+layout(binding = 6, set = 0, rgba16f) uniform writeonly image2D historyOutImage;
+// Render-res motion vectors (the same image DLSS-RR consumes as low-res MVs): screen displacement in
+// render pixels, from the previous frame to this one, including object motion. Using these instead of
+// rebuilding a position from depth is what makes the accumulation survive camera translation: the
+// world shaders derive them from the actual primary hit, so they carry no perspective-divide error,
+// they are the exact vectors RR reconstructs the display-res image with, and they cover moving
+// geometry that a camera-only reprojection cannot represent at all.
+layout(binding = 7, set = 0, rg16f) uniform readonly image2D motionImage;
 
 // HDR display parameters. hdrEnabled gates the parallel PQ write; the SDR AgX path always runs because
 // vanilla main-target presentation still consumes LDR.
@@ -20,7 +31,14 @@ layout(push_constant) uniform Push {
     int depthOfFieldMode;    // 0 = crosshair autofocus, 1 = distant miniature focus
     float depthOfFieldFocusDepth;
     float depthOfFieldFarDepth;
-    int depthOfFieldForegroundQuality; // 0..5 = 4/8/16/24/64/120 spread samples
+    int depthOfFieldForegroundQuality; // 0..5 = 16/32/64/96/256/480 spread samples
+    // Temporal accumulation of the defocused result. This pass runs after DLSS-RR, so nothing else can
+    // average out the sampling error it adds. Reprojection uses the motion-vector image rather than a
+    // reconstructed position: it is the same data RR reconstructs the display-res image with, it
+    // already contains object motion, and it avoids the depth-dependent errors of a back-projection.
+    int temporalEnabled;   // 0 = refresh history only, 1 = also blend with it
+    int frameIndex;        // drives the per-frame rotation of the sample pattern
+    vec2 motionScale;      // display pixels per motion-vector unit (display size / render size)
 } pc;
 
 // Tonemap seam: map HDR RT radiance to displayable LDR before copying back to the main target.
@@ -118,11 +136,87 @@ vec3 tonemapHdr(vec3 hdr, float exposure) {
     return vec3(pqEncode(nits2020.r), pqEncode(nits2020.g), pqEncode(nits2020.b));
 }
 
-float sceneDepth(ivec2 pixel, ivec2 displaySize) {
-    ivec2 depthSize = imageSize(depthImage);
-    ivec2 coord = clamp(pixel * depthSize / displaySize, ivec2(0), depthSize - 1);
-    float depth = imageLoad(depthImage, coord).r;
+float sanitizeDepth(float depth) {
     return isnan(depth) ? 0.0 : clamp(depth, 0.0, 1.0);
+}
+
+// Nearest-texel depth guide read at a continuous display-pixel centre. Used by the autofocus probe
+// and by the spread search: both only need a rough "which surface sits here" answer, and neither
+// feeds the per-pixel blur radius directly. One tap instead of four also buys four times the sample
+// density for the same cost, which is what the spread search needs: a thin defocused leaf covers
+// ~2% of the search disc, so a sparse search misses it and the radius then jumps between frames.
+//
+// This must NOT be used for the gather's centre depth; see applyDepthOfField.
+float sceneDepthNearest(vec2 center, ivec2 displaySize) {
+    ivec2 depthSize = imageSize(depthImage);
+    ivec2 coord = clamp(ivec2((center + 0.5) * vec2(depthSize) / vec2(displaySize)),
+            ivec2(0), depthSize - 1);
+    return sanitizeDepth(imageLoad(depthImage, coord).r);
+}
+
+// Bilinear depth guide read at a continuous display-pixel centre. This is the read the gather's
+// centre depth uses. Nearest-neighbour lookups were one of the reasons defocused silhouettes
+// flickered: a sub-pixel camera move re-picked the whole blur radius from a neighbouring render-res
+// texel, so the radius itself stepped.
+float sceneDepthLinear(vec2 center, ivec2 displaySize) {
+    ivec2 depthSize = imageSize(depthImage);
+    vec2 base = (center + 0.5) * vec2(depthSize) / vec2(displaySize) - 0.5;
+    ivec2 low = ivec2(floor(base));
+    ivec2 high = low + ivec2(1);
+    vec2 f = base - vec2(low);
+    ivec2 limit = depthSize - 1;
+    float d00 = sanitizeDepth(imageLoad(depthImage, clamp(ivec2(low.x, low.y), ivec2(0), limit)).r);
+    float d10 = sanitizeDepth(imageLoad(depthImage, clamp(ivec2(high.x, low.y), ivec2(0), limit)).r);
+    float d01 = sanitizeDepth(imageLoad(depthImage, clamp(ivec2(low.x, high.y), ivec2(0), limit)).r);
+    float d11 = sanitizeDepth(imageLoad(depthImage, clamp(ivec2(high.x, high.y), ivec2(0), limit)).r);
+    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+}
+
+float sceneDepth(ivec2 pixel, ivec2 displaySize) {
+    return sceneDepthNearest(vec2(pixel), displaySize);
+}
+
+// Bilinear HDR colour read at a continuous display-pixel centre. Storage images carry no sampler,
+// so this is a manual 4-tap. Sub-pixel offsets (which the spiral produces everywhere) previously
+// fell through imageLoad's nearest texel and quantised onto discrete integer rings.
+vec3 sceneColorLinear(vec2 center, ivec2 displaySize) {
+    ivec2 low = ivec2(floor(center));
+    ivec2 high = low + ivec2(1);
+    vec2 f = center - vec2(low);
+    ivec2 limit = displaySize - 1;
+    vec3 c00 = imageLoad(rtImage, clamp(ivec2(low.x, low.y), ivec2(0), limit)).rgb;
+    vec3 c10 = imageLoad(rtImage, clamp(ivec2(high.x, low.y), ivec2(0), limit)).rgb;
+    vec3 c01 = imageLoad(rtImage, clamp(ivec2(low.x, high.y), ivec2(0), limit)).rgb;
+    vec3 c11 = imageLoad(rtImage, clamp(ivec2(high.x, high.y), ivec2(0), limit)).rgb;
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+// Deterministic per-pixel value in [0,1). Fixed in time on purpose: this pass runs after DLSS-RR
+// with no temporal accumulation of its own, so a per-frame rotation would not be averaged away and
+// would read as crawling grain. Decorrelating the sample pattern across the screen instead removes
+// the coherent ring structure a screen-aligned kernel leaves on high-frequency geometry while
+// keeping a still camera perfectly stable.
+float pixelRandom(ivec2 pixel, uint salt) {
+    uint h = uint(pixel.x) * 0x9E3779B9u ^ uint(pixel.y) * 0x85EBCA6Bu ^ salt;
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return float(h >> 8) * (1.0 / 16777216.0);
+}
+
+// Per-frame rotation of the sample pattern. With temporal accumulation in place the gather's error
+// can now average out, so the kernel is allowed to move between frames: the previous time-fixed
+// pattern would have accumulated to exactly the same noise it started from. Two different
+// low-discrepancy sequences (golden ratio for the rotation, R2 for the radial offset) keep the
+// per-frame samples from repeating before the counter wraps.
+float frameRotation() {
+    return fract(float(pc.frameIndex & 4095) * 0.6180339887);
+}
+
+float frameRadial() {
+    return fract(float(pc.frameIndex & 4095) * 0.7548776662);
 }
 
 float autofocusDepth(ivec2 size) {
@@ -140,96 +234,255 @@ float autofocusDepth(ivec2 size) {
     return clamp(centerDepth, min(lowerMiddle, upperMiddle), max(lowerMiddle, upperMiddle));
 }
 
-float depthOfFieldRadius(float depth, float focusDepth, ivec2 size) {
+// Circle-of-confusion radius in display pixels, and the sample kernel that gathers it.
+//
+// Both focus modes keep their previous response shape, but the radius is now a real pixel radius
+// with ITRP's sub-pixel floor instead of the old hard `radius < 0.8 => return centerColor` cutoff.
+// That cutoff flipped whole pixels between sharp and blurred as the radius crossed 0.8 from frame
+// to frame, which is what produced the salt-and-pepper sparkle around the focus plane.
+const float COC_MIN_PIXELS = 0.5641895835; // 1/sqrt(pi): ITRP's minimum circle of confusion
+const float GOLDEN_ANGLE = 2.3999632297;
+const float TAU = 6.28318530718;
+
+float cocMaxRadius() {
+    return pc.depthOfFieldMode == 1 ? 24.0 : 14.0;
+}
+
+// CoC ceiling in pixels for the active mode, scaled by the strength slider. Never below the
+// sub-pixel floor: clamp(x, lo, hi) is undefined when hi < lo, and a very small strength would
+// otherwise put the ceiling below the floor.
+float cocCeiling() {
+    return max(cocMaxRadius() * max(pc.depthOfFieldStrength, 1.0e-6), COC_MIN_PIXELS);
+}
+
+float circleOfConfusion(float depth, float focusDepth, ivec2 size) {
+    float shape;
     if (pc.depthOfFieldMode == 1) {
-        // Projection depth is affine in inverse view distance. Removing its far limit makes
-        // the ratio independent of the near plane. The bounded background CoC keeps very
-        // distant scenery recognizable while closer defocused objects can blur more strongly.
+        // Projection depth is affine in inverse view distance, so `distanceRatio` is exactly
+        // focusDistance / surfaceDistance. The pixel scale follows the display resolution the same
+        // way the crosshair mode does. The absolute 12/24 px this used before made the miniature
+        // effect stronger or weaker purely from the window size, and left the two focus modes on
+        // different scales within the same pass.
+        float unit = float(min(size.x, size.y)) * (12.0 / 1080.0);
         float focusInverseDistance = max(pc.depthOfFieldFocusDepth - pc.depthOfFieldFarDepth, 1.0e-6);
         float pixelInverseDistance = max(depth - pc.depthOfFieldFarDepth, 1.0e-6);
         float distanceRatio = pixelInverseDistance / focusInverseDistance;
-        float maxRadius = distanceRatio > 1.0 ? 24.0 : 12.0;
-        return min(maxRadius, abs(distanceRatio - 1.0) * 12.0) * pc.depthOfFieldStrength;
+        // The near side is allowed twice the far side's radius, matching |1/z - 1/z_focus|; both are
+        // bounded so distant scenery stays recognizable.
+        float modeCeiling = distanceRatio > 1.0 ? 2.0 * unit : unit;
+        shape = min(modeCeiling, abs(distanceRatio - 1.0) * unit);
+    } else {
+        // Preserve the crosshair autofocus response. Reversed-Z projection depth is proportional to
+        // inverse view distance, so |depth - focusDepth| already is the physical |1/z - 1/z_focus|
+        // term that ITRP's abs(a*(d-f)/(d*f)) evaluates on linear depth; only the pixel scale and
+        // the missing lower bound differed.
+        shape = min(14.0, abs(depth - focusDepth) * float(min(size.x, size.y)) * 0.42);
     }
-    // Preserve the crosshair autofocus response.
-    return min(14.0, abs(depth - focusDepth) * float(min(size.x, size.y)) * 0.42)
-            * pc.depthOfFieldStrength;
+    return clamp(shape * pc.depthOfFieldStrength, COC_MIN_PIXELS, cocCeiling());
 }
 
-vec3 blurSameDepthLayer(ivec2 pixel, ivec2 size, vec3 centerColor,
-        float centerDepth, float radius) {
-    if (radius < 0.8) return centerColor;
+// Scatter-as-gather CoC spread, ITRP's CoCSpread. A sharp pixel next to a defocused foreground
+// surface has to blur by that surface's CoC, not by its own. The previous pass looked for the same
+// thing but only mixed the result in through a 2-pixel smoothstep clamped to 0.75 coverage, which
+// left a hard rim where a defocused silhouette should fade out.
+float spreadCircleOfConfusion(ivec2 pixel, ivec2 size, float centerDepth, float focusDepth,
+        float centerCoc) {
+    float maxRadius = cocCeiling();
+    // Already at the ceiling: no neighbour can spread further, and startRadius would be 1 anyway.
+    if (centerCoc >= maxRadius) {
+        return centerCoc;
+    }
+    int samples = pc.depthOfFieldForegroundQuality == 5 ? 480
+            : (pc.depthOfFieldForegroundQuality == 4 ? 256
+            : (pc.depthOfFieldForegroundQuality == 3 ? 96
+            : (pc.depthOfFieldForegroundQuality == 2 ? 64
+            : (pc.depthOfFieldForegroundQuality == 0 ? 16 : 32))));
+    float start = centerCoc / maxRadius;
+    start *= start; // area-uniform: the search starts at the centre's own disc, not its radius
+    float angle = fract(pixelRandom(pixel, 0x68BC21EBu) + frameRotation()) * TAU;
+    float radial = fract(pixelRandom(pixel, 0x02E5BE93u) + frameRadial());
+    vec2 center = vec2(pixel);
+    float spread = centerCoc;
+    for (int i = 0; i < samples; ++i) {
+        float area = mix(start, 1.0, (float(i) + radial) / float(samples));
+        float sampleRadius = sqrt(area) * maxRadius;
+        float theta = angle + float(i) * GOLDEN_ANGLE;
+        vec2 sampleCenter = center + vec2(cos(theta), sin(theta)) * sampleRadius;
+        float sampleDepth = sceneDepthNearest(sampleCenter, size);
+        float sampleCoc = circleOfConfusion(sampleDepth, focusDepth, size);
+        // Reversed-Z: a larger projection depth is nearer. Only a nearer surface whose own CoC
+        // reaches across this offset can scatter over this pixel.
+        if (sampleCoc >= sampleRadius && sampleDepth >= centerDepth) {
+            spread = max(spread, sampleCoc);
+        }
+    }
+    return min(spread, maxRadius);
+}
+
+// Gather over a golden-angle spiral: radius follows sqrt(t) so samples are area-uniform, and both
+// the sub-pixel radial start and the rotation come from a per-pixel hash. The old kernel used one
+// shared direction for every pixel and rounded each offset to whole texels, so the disc landed on
+// the same discrete ring positions screen-wide and stepped as the radius changed.
+//
+// Sample weights follow ITRP's CoC-based bilateral test rather than a depth-difference threshold:
+// the threshold produced half-transparent colour bleed at depth edges, and it could not tell "this
+// neighbour is defocused" from "this neighbour is sharp but nearby".
+vec3 gatherDepthOfField(ivec2 pixel, ivec2 size, vec3 centerColor, float centerDepth,
+        float focusDepth, float centerCoc, float spreadCoc) {
+    // Everything around is in focus, so every sample would just re-read the centre texel.
+    if (spreadCoc <= COC_MIN_PIXELS + 1.0e-3) {
+        return centerColor;
+    }
+    float maxRadius = cocCeiling();
     int samples = pc.depthOfFieldQuality == 5 ? 120
             : (pc.depthOfFieldQuality == 4 ? 80
             : (pc.depthOfFieldQuality == 3 ? 48
             : (pc.depthOfFieldQuality == 2 ? 32 : (pc.depthOfFieldQuality == 0 ? 8 : 16))));
-    int pairs = samples / 2;
-    // A shared, opposite-pair spiral does not reshuffle at each screen pixel as the camera moves.
-    // This trades fine-grained dithering for a more stable silhouette and balances every ring.
-    vec2 direction = vec2(0.9800666, 0.1986693);
-    vec3 sum = centerColor;
-    float weightSum = 1.0;
-    for (int i = 0; i < pairs; ++i) {
-        float ring = sqrt((float(i) + 0.5) / float(pairs));
-        ivec2 offset = ivec2(round(radius * ring * direction));
-        for (int side = 0; side < 2; ++side) {
-            ivec2 samplePixel = clamp(pixel + (side == 0 ? offset : -offset), ivec2(0), size - 1);
-            float sampleDepth = sceneDepth(samplePixel, size);
-            // The color was upscaled before this pass but the depth guide is still render-res.
-            // Reject either direction of a large depth jump so a moving silhouette cannot
-            // borrow unrelated foreground/background colors from sparse blur samples.
-            float depthDifference = abs(sampleDepth - centerDepth);
-            float relativeDifference = depthDifference
-                    / max(max(sampleDepth, centerDepth) - pc.depthOfFieldFarDepth, 1.0e-5);
-            float weight = 1.0 - smoothstep(0.10, 0.25, relativeDifference);
-            sum += imageLoad(rtImage, samplePixel).rgb * weight;
-            weightSum += weight;
+    float normalizedSpread = clamp(spreadCoc / maxRadius, 0.0, 1.0);
+    float centerWeight = normalizedSpread * normalizedSpread - normalizedSpread + 1.0;
+    // When the centre is itself the most defocused surface around, its own contribution is already
+    // covered by the samples below, so the rejected-sample compensation must not also lean on it.
+    centerWeight = mix(centerWeight, 1.0e-20,
+            min(pow(centerCoc / max(spreadCoc, 1.0e-6), 4.0), 1.0));
+
+    float angle = fract(pixelRandom(pixel, 0x68BC21EBu) + frameRotation()) * TAU;
+    float radial = fract(pixelRandom(pixel, 0x02E5BE93u) + frameRadial());
+    vec2 center = vec2(pixel);
+    vec3 scattered = vec3(0.0);
+    float scatteredWeight = 0.0;
+    vec3 selfColor = centerColor * 1.0e-20;
+    float selfSamples = 1.0e-20;
+    float selfWeights = 0.0;
+    for (int i = 0; i < samples; ++i) {
+        float area = (float(i) + radial) / float(samples);
+        float sampleRadius = sqrt(area) * spreadCoc;
+        float theta = angle + float(i) * GOLDEN_ANGLE;
+        vec2 sampleCenter = center + vec2(cos(theta), sin(theta)) * sampleRadius;
+        float sampleDepth = sceneDepthLinear(sampleCenter, size);
+        vec3 sampleColor = sceneColorLinear(sampleCenter, size);
+        float sampleCoc = circleOfConfusion(sampleDepth, focusDepth, size);
+        if (centerCoc >= sampleRadius && sampleDepth <= centerDepth) {
+            // Behind the centre, still inside the centre's own disc: the centre scatters over it.
+            selfColor += sampleColor;
+            selfSamples += 1.0;
+        } else if (sampleCoc >= sampleRadius && sampleDepth > centerDepth) {
+            // Nearer surface whose CoC covers this offset: it scatters over the centre. The squared
+            // relative-CoC weight keeps a barely defocused neighbour from outvoting a strongly
+            // defocused one, which is what removed the bright halo at depth discontinuities.
+            float weight = max(1.0, centerCoc / sampleCoc);
+            weight *= weight;
+            scattered += sampleColor * weight;
+            scatteredWeight += weight;
+        } else {
+            // Neither layer covers this offset (a depth jump, or too far outside the disc). Counting
+            // it into the denominator keeps silhouettes from brightening, and the self-colour
+            // inflation below keeps them from darkening when almost no sample qualifies.
+            selfWeights += centerWeight;
         }
-        direction = vec2(direction.x * -0.73736886 - direction.y * 0.67549032,
-                direction.x * 0.67549032 + direction.y * -0.73736886);
     }
-    return sum / weightSum;
+    scattered += selfColor * (1.0 + selfWeights / selfSamples);
+    return scattered / (scatteredWeight + selfSamples + selfWeights);
 }
 
-vec3 applyDepthOfField(ivec2 pixel, ivec2 size, vec3 centerColor) {
+// Bilinear read of the previous frame's accumulation buffer at a continuous display-pixel centre.
+vec4 historyLinear(vec2 center, ivec2 displaySize) {
+    ivec2 low = ivec2(floor(center));
+    ivec2 high = low + ivec2(1);
+    vec2 f = center - vec2(low);
+    ivec2 limit = displaySize - 1;
+    vec4 h00 = imageLoad(historyImage, clamp(ivec2(low.x, low.y), ivec2(0), limit));
+    vec4 h10 = imageLoad(historyImage, clamp(ivec2(high.x, low.y), ivec2(0), limit));
+    vec4 h01 = imageLoad(historyImage, clamp(ivec2(low.x, high.y), ivec2(0), limit));
+    vec4 h11 = imageLoad(historyImage, clamp(ivec2(high.x, high.y), ivec2(0), limit));
+    return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+// Temporal accumulation of the defocused colour. The gather's error is a per-frame sampling pattern,
+// so it only averages out over time: this pass runs after DLSS-RR, which cannot clean up noise the
+// blur invents, and the spatial kernel alone leaves that noise frozen on screen and stepping whenever
+// the camera moves a sub-pixel.
+//
+// Only DOF_TEMPORAL_BLEND of the new frame enters the result, so a still camera converges to roughly
+// a 1/sqrt(5) reduction of the sampling error. That weight is the ghosting trade: lower keeps more
+// history and ghosts more, higher converges faster and trails less. 0.2 (a five-frame effective
+// window) is the balance that keeps moving footage usable — reprojection error of even a fraction of
+// a pixel turns into a visible streak at 0.1, because it is a steady bias rather than zero-mean noise.
+const float DOF_TEMPORAL_BLEND = 0.2;
+// Inverse-distance tolerance for the depth test. Projection depth is non-linear (reversed-Z packs
+// almost all of its precision near the camera), so a raw depth difference would reject nearly
+// everything up close and nothing far away.
+const float DOF_TEMPORAL_DEPTH_TOLERANCE = 0.08;
+
+// Bilinear motion-vector read at a continuous display-pixel centre, converted to display pixels. The
+// vectors are stored at render resolution, so the display pixel has to be mapped onto that grid first;
+// one render texel covers several display pixels, but motion is smooth enough that this costs nothing
+// visible and keeping the two in the same space is what makes the reprojection exact.
+vec2 motionLinear(vec2 center, ivec2 displaySize) {
+    ivec2 motionSize = imageSize(motionImage);
+    vec2 base = (center + 0.5) * vec2(motionSize) / vec2(displaySize) - 0.5;
+    ivec2 low = ivec2(floor(base));
+    ivec2 high = low + ivec2(1);
+    vec2 f = base - vec2(low);
+    ivec2 limit = motionSize - 1;
+    vec2 m00 = imageLoad(motionImage, clamp(ivec2(low.x, low.y), ivec2(0), limit)).rg;
+    vec2 m10 = imageLoad(motionImage, clamp(ivec2(high.x, low.y), ivec2(0), limit)).rg;
+    vec2 m01 = imageLoad(motionImage, clamp(ivec2(low.x, high.y), ivec2(0), limit)).rg;
+    vec2 m11 = imageLoad(motionImage, clamp(ivec2(high.x, high.y), ivec2(0), limit)).rg;
+    return mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y) * pc.motionScale;
+}
+
+// Colour range of the sharp input around this pixel. The blurred result is a weighted average of that
+// neighbourhood, so its values stay inside this range; clipping history into it removes the long
+// streaks a slightly-off reprojection would otherwise accumulate. It is looser than a range built from
+// the blurred result itself (that would need a second pass), but it still cuts the worst smears.
+void historyBounds(ivec2 pixel, ivec2 size, out vec3 low, out vec3 high) {
+    ivec2 limit = size - 1;
+    vec3 c0 = imageLoad(rtImage, clamp(pixel, ivec2(0), limit)).rgb;
+    vec3 c1 = imageLoad(rtImage, clamp(pixel + ivec2(1, 0), ivec2(0), limit)).rgb;
+    vec3 c2 = imageLoad(rtImage, clamp(pixel - ivec2(1, 0), ivec2(0), limit)).rgb;
+    vec3 c3 = imageLoad(rtImage, clamp(pixel + ivec2(0, 1), ivec2(0), limit)).rgb;
+    vec3 c4 = imageLoad(rtImage, clamp(pixel - ivec2(0, 1), ivec2(0), limit)).rgb;
+    low = min(min(min(c0, c1), min(c2, c3)), c4);
+    high = max(max(max(c0, c1), max(c2, c3)), c4);
+}
+
+vec3 resolveTemporal(ivec2 pixel, ivec2 size, vec3 current, float centerDepth) {
+    vec2 previous = vec2(pixel) + motionLinear(vec2(pixel), size);
+    if (previous.x < 0.0 || previous.y < 0.0
+            || previous.x > float(size.x - 1) || previous.y > float(size.y - 1)) {
+        return current; // the reprojected position lies outside the recorded history
+    }
+    vec4 history = historyLinear(previous, size);
+    // The depth test still guards implicit disocclusion: motion vectors are exact for a surface that
+    // stayed visible, but geometry revealed from behind something else carries no usable history.
+    float currentInverse = max(centerDepth - pc.depthOfFieldFarDepth, 1.0e-5);
+    float historyInverse = max(history.a - pc.depthOfFieldFarDepth, 1.0e-5);
+    float relative = abs(currentInverse - historyInverse) / max(currentInverse, historyInverse);
+    if (relative > DOF_TEMPORAL_DEPTH_TOLERANCE) {
+        return current; // history belongs to a different surface: reusing it would smear the edge
+    }
+    vec3 low;
+    vec3 high;
+    historyBounds(pixel, size, low, high);
+    return mix(clamp(history.rgb, low, high), current, DOF_TEMPORAL_BLEND);
+}
+
+// `centerDepth` is supplied by the caller rather than read here: main() needs the same value for the
+// temporal resolve, and it has to be the bilinear guide read, not a nearest texel. The guide is
+// render-res (the trace runs at render scale while this pass runs at display res), so one texel covers
+// several display pixels; with a nearest lookup a whole run of pixels inside a near silhouette
+// inherits the *background* texel's depth, classifies itself as in focus and is returned unblurred:
+// that is the flat "film" seen inside defocused near geometry, with a hard and flickering seam.
+vec3 applyDepthOfField(ivec2 pixel, ivec2 size, float centerDepth, vec3 centerColor) {
     float focusDepth = pc.depthOfFieldMode == 1
             ? pc.depthOfFieldFocusDepth : autofocusDepth(size);
-    float centerDepth = sceneDepth(pixel, size);
-    float radius = depthOfFieldRadius(centerDepth, focusDepth, size);
-    vec3 blurred = blurSameDepthLayer(pixel, size, centerColor, centerDepth, radius);
-
-    // A nearer out-of-focus surface can cover this pixel even when the pixel itself is
-    // sharp. Gather its circle of confusion separately, as ITRP's CoC-spread pass does.
-    int spreadSamples = pc.depthOfFieldForegroundQuality == 5 ? 120
-            : (pc.depthOfFieldForegroundQuality == 4 ? 64
-            : (pc.depthOfFieldForegroundQuality == 3 ? 24
-            : (pc.depthOfFieldForegroundQuality == 2 ? 16
-            : (pc.depthOfFieldForegroundQuality == 0 ? 4 : 8))));
-    int pairs = spreadSamples / 2;
-    float searchRadius = (pc.depthOfFieldMode == 1 ? 24.0 : 14.0) * pc.depthOfFieldStrength;
-    vec2 direction = vec2(0.8775826, 0.4794255);
-    vec3 foregroundSum = vec3(0.0);
-    float foregroundWeight = 0.0;
-    for (int i = 0; i < pairs; ++i) {
-        float distance = searchRadius * (float(i) + 0.5) / float(pairs);
-        ivec2 offset = ivec2(round(distance * direction));
-        for (int side = 0; side < 2; ++side) {
-            ivec2 samplePixel = clamp(pixel + (side == 0 ? offset : -offset), ivec2(0), size - 1);
-            float sampleDepth = sceneDepth(samplePixel, size);
-            float separation = (sampleDepth - centerDepth)
-                    / max(sampleDepth - pc.depthOfFieldFarDepth, 1.0e-5);
-            if (separation > 0.18) {
-                float sampleRadius = depthOfFieldRadius(sampleDepth, focusDepth, size);
-                float coverage = smoothstep(0.0, 2.0, sampleRadius - length(vec2(offset)));
-                foregroundSum += imageLoad(rtImage, samplePixel).rgb * coverage;
-                foregroundWeight += coverage;
-            }
-        }
-        direction = vec2(direction.x * -0.73736886 - direction.y * 0.67549032,
-                direction.x * 0.67549032 + direction.y * -0.73736886);
-    }
-    float foregroundCoverage = min(0.75, 2.0 * foregroundWeight / float(spreadSamples));
-    return mix(blurred, foregroundSum / max(foregroundWeight, 1.0e-5), foregroundCoverage);
+    float centerCoc = circleOfConfusion(centerDepth, focusDepth, size);
+    // The blur disc is driven by how far the circle of confusion spreads *into* this pixel, not by
+    // this pixel's own CoC: a sharp pixel in front of a defocused foreground surface has to take on
+    // that surface's radius. The spread search and the gather then share one weight model, so there
+    // is no separate "foreground coverage" blend with its own clamped transition any more.
+    float spreadCoc = spreadCircleOfConfusion(pixel, size, centerDepth, focusDepth, centerCoc);
+    return gatherDepthOfField(pixel, size, centerColor, centerDepth, focusDepth, centerCoc, spreadCoc);
 }
 
 void main() {
@@ -240,14 +493,24 @@ void main() {
     }
 
     vec4 rt = imageLoad(rtImage, pix);
+    float centerDepth = sceneDepthLinear(vec2(pix), size);
+    vec3 color = rt.rgb;
     if (pc.depthOfField != 0 && pc.depthOfFieldStrength > 0.0) {
-        rt.rgb = applyDepthOfField(pix, size, rt.rgb);
+        color = applyDepthOfField(pix, size, centerDepth, color);
     }
+    if (pc.temporalEnabled != 0) {
+        color = resolveTemporal(pix, size, color, centerDepth);
+    }
+    // History is refreshed every frame with the resolved colour and this frame's geometry, so
+    // re-enabling the effect never mixes in an arbitrarily old frame and the stored depth always
+    // describes the surface the colour came from.
+    imageStore(historyOutImage, pix, vec4(color, centerDepth));
+
     float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
-    vec3 ldr = tonemap(rt.rgb, exposure);
+    vec3 ldr = tonemap(color, exposure);
     imageStore(outputImage, pix, vec4(ldr, 1.0));
 
     if (pc.hdrEnabled != 0) {
-        imageStore(hdrImage, pix, vec4(tonemapHdr(rt.rgb, exposure), 1.0));
+        imageStore(hdrImage, pix, vec4(tonemapHdr(color, exposure), 1.0));
     }
 }
