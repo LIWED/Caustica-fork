@@ -25,6 +25,14 @@ final class RtRainExposureTest {
         assertEquals(255, (packed >>> 16) & 255);
     }
 
+    @Test
+    void adjacentWallFacesShareWetnessAtTheirCommonEdge() {
+        assertEquals(0.5f, RtRainExposure.edge(0, 0, 1, 1.0f));
+        assertEquals(RtRainExposure.edge(0, 0, 1, 1.0f),
+                RtRainExposure.edge(0, 1, 1, 0.0f));
+        assertEquals(1.0f, RtRainExposure.edge(0, 1, 1, 1.0f));
+    }
+
     private static float[] corners(int tileX) {
         int[] sky = new int[9];
         for (int z = 0; z < 3; z++) {

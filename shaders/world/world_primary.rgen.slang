@@ -22,6 +22,7 @@ import water;
 import trace;
 import water_volume;
 import air_volume;
+import cloud_volume;
 import guides;
 
 public PathSegment tracePrimary(PathSegment seg,
@@ -60,6 +61,22 @@ public PathSegment tracePrimary(PathSegment seg,
             AirVolumeResult air = integrateAirVolume(ro, rd, segmentDistance, true, airSeed);
             prefixRadiance += throughput * air.radiance;
             throughput *= air.transmittance;
+            terminal.throughput = throughput;
+        }
+
+        // A miss already composites clouds over the sky. For a terrain hit, the same
+        // cloud segment must be composited before the surface when viewed from above.
+        if (payload.hitT >= 0.0 && mediumIsAir(medium.current)
+                && (worldPush.flags & (1u << 9u)) != 0u) {
+            float rain = clamp(worldPush.weather.x, 0.0, 1.0);
+            float thunder = clamp(worldPush.weather.y, 0.0, 1.0);
+            float direct = clamp(1.0 - rain * 0.72 - thunder * 0.18, 0.10, 1.0);
+            float lightning = thunder * smoothstep(0.78, 1.0, worldPush.weather.z);
+            float weatherSky = clamp(direct + lightning * (1.0 - direct) * 0.80, 0.10, 1.0);
+            VolumeCloudResult cloud = integrateVolumetricCloud(
+                    worldPush, ro, rd, payload.hitT, weatherSky);
+            prefixRadiance += throughput * cloud.radiance;
+            throughput *= cloud.transmittance;
             terminal.throughput = throughput;
         }
 

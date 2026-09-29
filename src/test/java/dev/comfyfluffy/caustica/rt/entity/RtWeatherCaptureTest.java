@@ -43,7 +43,7 @@ final class RtWeatherCaptureTest {
     }
 
     @Test
-    void rainAndSnowBecomeRebasedCrossQuadsWithAnimatedOriginalUvs() {
+    void rainAndSnowBecomeRebasedCrossQuadsWithCompactRainStreaks() {
         RtWeatherSnapshot snapshot = new RtWeatherSnapshot(
                 List.of(new RtWeatherSnapshot.Column(110, 220, 64, 72, 0.25f, 0.5f, 0x00F000A0)),
                 List.of(new RtWeatherSnapshot.Column(111, 221, 80, 84, 0.125f, 0.75f, 0x006000F0)),
@@ -55,13 +55,13 @@ final class RtWeatherCaptureTest {
         assertEquals(RtWeatherSnapshot.Kind.RAIN, mesh.quads().get(0).kind());
         assertEquals(RtWeatherSnapshot.Kind.SNOW, mesh.quads().get(2).kind());
         RtWeatherSnapshot.Vertex rainBottom = mesh.quads().get(0).vertices().getFirst();
-        assertEquals(10.15f, rainBottom.x(), 1.0e-5f);
+        assertEquals(10.38f, rainBottom.x(), 1.0e-5f);
         assertEquals(4.0f, rainBottom.y(), 1.0e-5f);
         assertEquals(20.5f, rainBottom.z(), 1.0e-5f);
         assertEquals(0.25f, rainBottom.u(), 1.0e-5f);
-        assertEquals(16.5f, rainBottom.v(), 1.0e-5f); // vanilla vOffset already includes game-time animation
+        assertEquals(29.3f, rainBottom.v(), 1.0e-5f); // preserve vanilla's animated offset with shorter repeated streaks
         assertEquals(0.336f, rainBottom.alpha(), 1.0e-5f);
-        assertEquals(0.35f, rainBottom.halfWidth(), 1.0e-5f);
+        assertEquals(0.12f, rainBottom.halfWidth(), 1.0e-5f);
         assertEquals(0x00F000A0, rainBottom.lightCoords());
         assertEquals(0.4f, mesh.quads().get(2).vertices().getFirst().halfWidth(), 1.0e-5f);
     }

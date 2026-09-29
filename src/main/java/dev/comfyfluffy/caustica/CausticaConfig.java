@@ -59,6 +59,8 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
+            Rt.Composite.PLANAR_CLOUDS, Rt.Composite.CLOUD_QUALITY,
+            Rt.Composite.CLOUD_COVERAGE, Rt.Composite.CLOUD_DENSITY, Rt.Composite.CLOUD_SPEED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -531,6 +533,20 @@ public final class CausticaConfig {
         }
 
         public static final class Composite {
+            public static final BooleanSetting DEPTH_OF_FIELD =
+                    bool("caustica.rt.depthOfField", "composite.depth-of-field", false);
+            public static final FloatSetting DEPTH_OF_FIELD_STRENGTH =
+                    clampedFloat("caustica.rt.depthOfFieldStrength", "composite.depth-of-field-strength", 1.0f, 0.0f, 2.0f);
+            public static final IntSetting DEPTH_OF_FIELD_QUALITY =
+                    clampedInt("caustica.rt.depthOfFieldQuality", "composite.depth-of-field-quality", 1, 0, 5);
+            public static final IntSetting DEPTH_OF_FIELD_MODE =
+                    clampedInt("caustica.rt.depthOfFieldMode", "composite.depth-of-field-mode", 0, 0, 1);
+            public static final IntSetting DEPTH_OF_FIELD_FOCUS_DISTANCE =
+                    clampedInt("caustica.rt.depthOfFieldFocusDistance", "composite.depth-of-field-focus-distance", 96, 8, 512);
+            public static final IntSetting DEPTH_OF_FIELD_FOREGROUND_QUALITY =
+                    clampedInt("caustica.rt.depthOfFieldForegroundQuality", "composite.depth-of-field-foreground-quality", 1, 0, 5);
+            public static final FloatSetting ZOOM_FACTOR =
+                    clampedFloat("caustica.rt.zoomFactor", "composite.zoom-factor", 3.0f, 1.0f, 8.0f);
             public static final BooleanSetting PARALLAX =
                     bool("caustica.rt.parallax", "composite.parallax", true);
             public static final FloatSetting PARALLAX_DEPTH =
@@ -557,6 +573,20 @@ public final class CausticaConfig {
                     bool("caustica.rt.volumetricLight", "composite.volumetric-light", true);
             public static final FloatSetting VOLUMETRIC_ABSORPTION =
                     clampedFloat("caustica.rt.volumetricAbsorption", "composite.volumetric-absorption", 1.0f, 0.0f, 2.0f);
+            public static final BooleanSetting PLANAR_CLOUDS =
+                    bool("caustica.rt.planarClouds", "composite.planar-clouds", true);
+            public static final IntSetting CLOUD_QUALITY =
+                    clampedInt("caustica.rt.cloudQuality", "composite.cloud-quality", 1, 0, 2);
+            public static final IntSetting CLOUD_LAYERS =
+                    clampedInt("caustica.rt.cloudLayers", "composite.cloud-layers", 2, 1, 2);
+            public static final IntSetting CLOUD_SAMPLES =
+                    clampedInt("caustica.rt.cloudSamples", "composite.cloud-samples", 24, 8, 64);
+            public static final FloatSetting CLOUD_COVERAGE =
+                    clampedFloat("caustica.rt.cloudCoverage", "composite.cloud-coverage", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting CLOUD_DENSITY =
+                    clampedFloat("caustica.rt.cloudDensity", "composite.cloud-density", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting CLOUD_SPEED =
+                    clampedFloat("caustica.rt.cloudSpeed", "composite.cloud-speed", 1.0f, 0.0f, 2.0f);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
                     radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =

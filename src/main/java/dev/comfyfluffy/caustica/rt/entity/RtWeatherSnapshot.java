@@ -108,7 +108,7 @@ public record RtWeatherSnapshot(List<Column> rainColumns, List<Column> snowColum
                                     float previousTimeSeconds) {
         float cx = column.x() + 0.5f - rbx;
         float cz = column.z() + 0.5f - rbz;
-        float halfWidth = kind == Kind.RAIN ? 0.35f : 0.4f;
+        float halfWidth = kind == Kind.RAIN ? 0.12f : 0.4f;
         float distanceNorm;
         if (radius <= 0) {
             distanceNorm = 1.0f;
@@ -133,9 +133,9 @@ public record RtWeatherSnapshot(List<Column> rainColumns, List<Column> snowColum
             float highY = column.bottomY() + height * ((section + 1) / (float) sections);
             Drift high = kind == Kind.SNOW ? snowDrift(column, highY, timeSeconds, previousTimeSeconds) : Drift.ZERO;
             float v0 = (kind == Kind.SNOW ? (column.bottomY() + column.topY() - lowY) * 0.30f
-                    : lowY * 0.25f) + column.vOffset();
+                    : lowY * 0.45f) + column.vOffset();
             float v1 = (kind == Kind.SNOW ? (column.bottomY() + column.topY() - highY) * 0.30f
-                    : highY * 0.25f) + column.vOffset();
+                    : highY * 0.45f) + column.vOffset();
             out.add(quad(kind,
                     vertex(cx - halfWidth + low.x, lowY - rby, cz + low.z, u0, v0, columnAlpha, column.lightCoords(), halfWidth, low),
                     vertex(cx - halfWidth + high.x, highY - rby, cz + high.z, u0, v1, columnAlpha, column.lightCoords(), halfWidth, high),

@@ -48,7 +48,8 @@ public struct WorldPush {
     public uint     spp;
     public float2   jitter;
     public uint     flags;            // bit0 submerged, bit4 waves, bit5 water fog, bit6 air fog, bit7 shafts;
-                                     // bit8 POM, bits16..23 POM depth percent (0..200)
+                                     // bit8 POM, bit9 planar clouds, bits10..11 cloud detail quality;
+                                     // bits16..23 POM depth, bits24..31 cloud density percent
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
@@ -61,7 +62,8 @@ public struct WorldPush {
     public float4   weatherColor;     // linear weather fog RGB, cloud layer height
     // Full terrain-rebase X/Z in xy. Adding rebased ray coordinates restores a continuous world cloud
     // domain; float precision becomes coarse only beyond the usual ~16-million-block exact-int range.
-    public float4   cloudAnchor;
+    public float4   cloudAnchor;      // xy world X/Z rebase, z cloud coverage 0..2, w cloud speed 0..2
+    public float4   cloudTuning;      // x active layers 1..2, y legacy sampling budget 8..64 (analytic light probes)
     public float4   airVolume;        // base density, height falloff, rebased base height, max distance
     public float4   waterParams;      // xyz camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy wave anchor, z previous wave time, w water-fog strength (0..2)

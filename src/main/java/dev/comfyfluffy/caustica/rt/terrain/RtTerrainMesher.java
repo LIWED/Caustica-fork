@@ -440,22 +440,43 @@ final class RtTerrainMesher {
             float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (len > 1.0e-6f) { nx /= len; ny /= len; nz /= len; }
             q.nx = nx; q.ny = ny; q.nz = nz;
-            q.rainBiome = ny > 0.85f && view instanceof RtSectionSnapshots.Region region
-                    && region.rainBiomeAt(pos);
+            ChunkSectionLayer layer = quad.chunkLayer();
+            q.cutout = layer != ChunkSectionLayer.SOLID;
+            q.translucent = layer == ChunkSectionLayer.TRANSLUCENT;
+            // Connected-texture overlays may use CUTOUT even on a solid block. Keep plants and
+            // translucent materials out of the wet-film path, but let such overlays match the base.
+            q.rainBiome = ny > -0.25f && !q.translucent && (!q.cutout || state.canOcclude())
+                    && view instanceof RtSectionSnapshots.Region region && region.rainBiomeAt(pos);
             if (q.rainBiome) {
                 RtSectionSnapshots.Region region = (RtSectionSnapshots.Region) view;
-                region.rainExposureCorners(pos, rainSkyScratch, rainCornerScratch);
-                for (int i = 0; i < 4; i++) {
-                    q.rainExposure[i] = RtRainExposure.at(rainCornerScratch,
-                            q.x[i] - originX, q.z[i] - originZ);
+                if (ny > 0.85f) {
+                    region.rainExposureCorners(pos, rainSkyScratch, rainCornerScratch);
+                    for (int i = 0; i < 4; i++) {
+                        q.rainExposure[i] = RtRainExposure.at(rainCornerScratch,
+                                q.x[i] - originX, q.z[i] - originZ);
+                    }
+                    // CTM quads can reach beyond their source block. Use that neighboring column's
+                    // exposure instead of clamping all outlying vertices to the source-block edge.
+                    for (int i = 0; i < 4; i++) {
+                        float localX = q.x[i] - originX;
+                        float localZ = q.z[i] - originZ;
+                        if (localX < 0.0f || localX > 1.0f || localZ < 0.0f || localZ > 1.0f) {
+                            q.rainExposure[i] = region.rainExposureBeyondBlock(pos, localX, localZ,
+                                    rainSkyScratch, rainCornerScratch);
+                        }
+                    }
+                } else {
+                    region.rainSideSamples(pos, nx, nz, rainSkyScratch);
+                    for (int i = 0; i < 4; i++) {
+                        float along = Math.abs(nx) >= Math.abs(nz)
+                                ? q.z[i] - originZ : q.x[i] - originX;
+                        q.rainExposure[i] = RtRainExposure.edge(rainSkyScratch[0],
+                                rainSkyScratch[1], rainSkyScratch[2], along);
+                    }
                 }
                 q.rainBiome = q.rainExposure[0] > 0.0f || q.rainExposure[1] > 0.0f
                         || q.rainExposure[2] > 0.0f || q.rainExposure[3] > 0.0f;
             }
-
-            ChunkSectionLayer layer = quad.chunkLayer();
-            q.cutout = layer != ChunkSectionLayer.SOLID;
-            q.translucent = layer == ChunkSectionLayer.TRANSLUCENT;
 
             // Fabric colors are authored albedo. Continuity uses them for already-resolved overlay tint;
             // ordinary biome-tinted quads retain tintIndex and are multiplied by the world tint below.

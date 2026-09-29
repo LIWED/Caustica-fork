@@ -45,3 +45,17 @@ public float3 rainRipple(float2 worldXZ, float time, float strength) {
     float2 horizontal = delta / max(radius, 0.001) * slope;
     return float3(horizontal.x, 0.0, horizontal.y);
 }
+
+// Narrow, broken rivulets slide down exposed upright faces while rain is falling. The positive
+// time term moves a fixed phase toward lower world Y; retained wetness alone does not animate them.
+public float rainRunoff(float3 hitPos, float3 geometricNormal, float2 worldAnchor,
+                        float time, float rain) {
+    if (rain <= 0.02 || geometricNormal.y > 0.6) return 0.0;
+    float2 worldXZ = hitPos.xz + worldAnchor;
+    float across = abs(geometricNormal.x) > abs(geometricNormal.z) ? worldXZ.y : worldXZ.x;
+    float drift = rainNoise(float2(across * 0.72, hitPos.y * 0.18)) * 0.13;
+    float lane = pow(saturate(0.5 + 0.5 * sin((across + drift) * 31.0)), 18.0);
+    float drops = smoothstep(0.36, 0.78,
+            rainNoise(float2(across * 1.7, hitPos.y * 0.95 + time * 1.35)));
+    return saturate(rain) * lane * drops;
+}

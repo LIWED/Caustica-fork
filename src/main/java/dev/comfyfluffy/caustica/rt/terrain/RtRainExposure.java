@@ -19,6 +19,14 @@ final class RtRainExposure {
                 + (corners[2] + (corners[3] - corners[2]) * x) * z;
     }
 
+    /** Interpolate direct-sky coverage along an exposed vertical face. */
+    static float edge(int before, int center, int after, float along) {
+        float start = (before + center) * 0.5f;
+        float end = (center + after) * 0.5f;
+        along = Math.max(0.0f, Math.min(1.0f, along));
+        return start + (end - start) * along;
+    }
+
     static int packTriangle(float a, float b, float c) {
         return byteLevel(a) | (byteLevel(b) << 8) | (byteLevel(c) << 16);
     }

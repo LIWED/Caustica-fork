@@ -22,6 +22,7 @@ public final class CausticaClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		CausticaMod.LOGGER.info("Caustica client initialized");
+		RtZoom.register();
 
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.

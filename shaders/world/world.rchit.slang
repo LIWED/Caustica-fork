@@ -499,8 +499,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     n = normalize(lerp(surface.normal, parallaxNormal, wallWeight));
     float wallNoV = dot(n, vdir);
     if (wallNoV < 0.02) n = normalize(n + vdir * (0.02 - wallNoV));
-    if (material == MATERIAL_OPAQUE && !nonSolid && (pr.flags & TERRAIN_PRIM_RAIN_BIOME) != 0u
-            && pr.normal.y > 0.85 && dot(pr.normal.xyz, vdir) > 0.0
+    if (material == MATERIAL_OPAQUE && (pr.flags & TERRAIN_PRIM_RAIN_BIOME) != 0u
+            && pr.normal.y >= -0.05 && dot(pr.normal.xyz, vdir) > 0.0
             && surface.emission < 0.01 && surface.metalness < 0.5) {
         ConstPtr<WorldPush> weatherPush = ConstPtr<WorldPush>(pc.worldPushAddr);
         // Three packed corner samples are interpolated using the hit barycentrics. Neighboring
@@ -508,8 +508,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 rainExposure = float3(float(pr.aux0 & 255u), float((pr.aux0 >> 8u) & 255u),
                 float((pr.aux0 >> 16u) & 255u)) * (1.0 / 255.0);
         float exposure = saturate(dot(bary, rainExposure));
-        float wet = weatherPush[0].waterTuning.z * exposure;
-        float rain = weatherPush[0].weather.x * exposure;
+        // Upright faces collect a thinner film than the horizontal ground; only top faces may
+        // form puddles. CUTOUT overlays from solid blocks use the same exposure as their base.
+        float faceWetness = lerp(0.65, 1.0, smoothstep(0.0, 0.85, pr.normal.y));
+        float wet = weatherPush[0].waterTuning.z * exposure * faceWetness;
+        float rain = weatherPush[0].weather.x * exposure * faceWetness;
         if (wet > 0.001 || rain > 0.02) {
             float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
             float puddle = rainPuddle(hitPos, pr.normal.xyz, wet, rain, weatherPush[0].cloudAnchor.xy);
@@ -524,6 +527,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             n = normalize(lerp(n, pr.normal.xyz, puddle * 0.9));
             n = normalize(n + rainRipple(hitPos.xz + weatherPush[0].cloudAnchor.xy,
                     weatherPush[0].weather.w, puddle * weatherPush[0].weather.x));
+            float runoff = rainRunoff(hitPos, pr.normal.xyz, weatherPush[0].cloudAnchor.xy,
+                    weatherPush[0].weather.w, rain);
+            if (runoff > 0.001) {
+                payload.albedo *= half(1.0 - 0.10 * runoff);
+                surface.roughness = lerp(surface.roughness, min(surface.roughness, 0.035), runoff * 0.65);
+                float3 wallAcross = normalize(float3(-pr.normal.z, 0.0, pr.normal.x));
+                n = normalize(n + wallAcross * (0.035 * runoff));
+            }
         }
     }
     payload.albedo *= half(surface.ao * parallaxCavity);

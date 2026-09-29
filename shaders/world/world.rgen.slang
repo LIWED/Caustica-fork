@@ -27,6 +27,7 @@ import water;
 import trace;
 import water_volume;
 import air_volume;
+import cloud_volume;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
 #endif
@@ -230,6 +231,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVo
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
+                vis *= cloudSunTransmittance(worldPush, shadowOrigin, lightDir);
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * worldPush.lightRadiance.xyz * ndl * vis;
                 }
@@ -307,6 +309,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVo
         if (ndl > 0.0) {
             VisibilityResult shadow = visibility(p, lightDir, 10000.0);
             float3 vis = shadow.transmittance * payloadParallaxShadow();
+            vis *= cloudSunTransmittance(worldPush, p, lightDir);
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
@@ -351,6 +354,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, bool airVo
             if (backNdl > 0.0) {
                 VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, 10000.0);
                 float3 visB = shadowBack.transmittance;
+                visB *= cloudSunTransmittance(worldPush, hitPos - n * SURF_BIAS, lightDir);
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
                 if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {

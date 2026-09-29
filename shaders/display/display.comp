@@ -6,6 +6,7 @@ layout(binding = 0, set = 0, rgba8) uniform writeonly image2D outputImage; // LD
 layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // HDR RT radiance
 layout(binding = 2, set = 0, r32f) uniform readonly image2D exposureImage; // 1x1 linear exposure scale
 layout(binding = 3, set = 0, rgba16f) uniform writeonly image2D hdrImage; // PQ-encoded ([0,1], ST.2084) HDR display
+layout(binding = 4, set = 0, r32f) uniform readonly image2D depthImage; // render-res reversed-Z guide
 
 // HDR display parameters. hdrEnabled gates the parallel PQ write; the SDR AgX path always runs because
 // vanilla main-target presentation still consumes LDR.
@@ -13,6 +14,13 @@ layout(push_constant) uniform Push {
     int hdrEnabled;        // 0 = SDR only, 1 = also write the PQ HDR image
     float paperWhiteNits;  // absolute nits SDR paper white maps to
     float headroom;        // highlight headroom above paper white (peakNits / paperWhiteNits, >= 1)
+    int depthOfField;      // 0 = preserve the original display path
+    float depthOfFieldStrength;
+    int depthOfFieldQuality; // 0..5 = 8/16/32/48/80/120 samples
+    int depthOfFieldMode;    // 0 = crosshair autofocus, 1 = distant miniature focus
+    float depthOfFieldFocusDepth;
+    float depthOfFieldFarDepth;
+    int depthOfFieldForegroundQuality; // 0..5 = 4/8/16/24/64/120 spread samples
 } pc;
 
 // Tonemap seam: map HDR RT radiance to displayable LDR before copying back to the main target.
@@ -110,6 +118,120 @@ vec3 tonemapHdr(vec3 hdr, float exposure) {
     return vec3(pqEncode(nits2020.r), pqEncode(nits2020.g), pqEncode(nits2020.b));
 }
 
+float sceneDepth(ivec2 pixel, ivec2 displaySize) {
+    ivec2 depthSize = imageSize(depthImage);
+    ivec2 coord = clamp(pixel * depthSize / displaySize, ivec2(0), depthSize - 1);
+    float depth = imageLoad(depthImage, coord).r;
+    return isnan(depth) ? 0.0 : clamp(depth, 0.0, 1.0);
+}
+
+float autofocusDepth(ivec2 size) {
+    ivec2 center = size / 2;
+    ivec2 depthSize = imageSize(depthImage);
+    // Use nearby depth pixels so one passing rain streak cannot pull the whole frame's focus.
+    ivec2 spread = max(ivec2(4), (size * 3 + depthSize - 1) / depthSize);
+    float a = sceneDepth(center + spread, size);
+    float b = sceneDepth(center - spread, size);
+    float c = sceneDepth(center + ivec2(spread.x, -spread.y), size);
+    float d = sceneDepth(center + ivec2(-spread.x, spread.y), size);
+    float centerDepth = sceneDepth(center, size);
+    float lowerMiddle = max(min(a, b), min(c, d));
+    float upperMiddle = min(max(a, b), max(c, d));
+    return clamp(centerDepth, min(lowerMiddle, upperMiddle), max(lowerMiddle, upperMiddle));
+}
+
+float depthOfFieldRadius(float depth, float focusDepth, ivec2 size) {
+    if (pc.depthOfFieldMode == 1) {
+        // Projection depth is affine in inverse view distance. Removing its far limit makes
+        // the ratio independent of the near plane. The bounded background CoC keeps very
+        // distant scenery recognizable while closer defocused objects can blur more strongly.
+        float focusInverseDistance = max(pc.depthOfFieldFocusDepth - pc.depthOfFieldFarDepth, 1.0e-6);
+        float pixelInverseDistance = max(depth - pc.depthOfFieldFarDepth, 1.0e-6);
+        float distanceRatio = pixelInverseDistance / focusInverseDistance;
+        float maxRadius = distanceRatio > 1.0 ? 24.0 : 12.0;
+        return min(maxRadius, abs(distanceRatio - 1.0) * 12.0) * pc.depthOfFieldStrength;
+    }
+    // Preserve the crosshair autofocus response.
+    return min(14.0, abs(depth - focusDepth) * float(min(size.x, size.y)) * 0.42)
+            * pc.depthOfFieldStrength;
+}
+
+vec3 blurSameDepthLayer(ivec2 pixel, ivec2 size, vec3 centerColor,
+        float centerDepth, float radius) {
+    if (radius < 0.8) return centerColor;
+    int samples = pc.depthOfFieldQuality == 5 ? 120
+            : (pc.depthOfFieldQuality == 4 ? 80
+            : (pc.depthOfFieldQuality == 3 ? 48
+            : (pc.depthOfFieldQuality == 2 ? 32 : (pc.depthOfFieldQuality == 0 ? 8 : 16))));
+    int pairs = samples / 2;
+    // A shared, opposite-pair spiral does not reshuffle at each screen pixel as the camera moves.
+    // This trades fine-grained dithering for a more stable silhouette and balances every ring.
+    vec2 direction = vec2(0.9800666, 0.1986693);
+    vec3 sum = centerColor;
+    float weightSum = 1.0;
+    for (int i = 0; i < pairs; ++i) {
+        float ring = sqrt((float(i) + 0.5) / float(pairs));
+        ivec2 offset = ivec2(round(radius * ring * direction));
+        for (int side = 0; side < 2; ++side) {
+            ivec2 samplePixel = clamp(pixel + (side == 0 ? offset : -offset), ivec2(0), size - 1);
+            float sampleDepth = sceneDepth(samplePixel, size);
+            // The color was upscaled before this pass but the depth guide is still render-res.
+            // Reject either direction of a large depth jump so a moving silhouette cannot
+            // borrow unrelated foreground/background colors from sparse blur samples.
+            float depthDifference = abs(sampleDepth - centerDepth);
+            float relativeDifference = depthDifference
+                    / max(max(sampleDepth, centerDepth) - pc.depthOfFieldFarDepth, 1.0e-5);
+            float weight = 1.0 - smoothstep(0.10, 0.25, relativeDifference);
+            sum += imageLoad(rtImage, samplePixel).rgb * weight;
+            weightSum += weight;
+        }
+        direction = vec2(direction.x * -0.73736886 - direction.y * 0.67549032,
+                direction.x * 0.67549032 + direction.y * -0.73736886);
+    }
+    return sum / weightSum;
+}
+
+vec3 applyDepthOfField(ivec2 pixel, ivec2 size, vec3 centerColor) {
+    float focusDepth = pc.depthOfFieldMode == 1
+            ? pc.depthOfFieldFocusDepth : autofocusDepth(size);
+    float centerDepth = sceneDepth(pixel, size);
+    float radius = depthOfFieldRadius(centerDepth, focusDepth, size);
+    vec3 blurred = blurSameDepthLayer(pixel, size, centerColor, centerDepth, radius);
+
+    // A nearer out-of-focus surface can cover this pixel even when the pixel itself is
+    // sharp. Gather its circle of confusion separately, as ITRP's CoC-spread pass does.
+    int spreadSamples = pc.depthOfFieldForegroundQuality == 5 ? 120
+            : (pc.depthOfFieldForegroundQuality == 4 ? 64
+            : (pc.depthOfFieldForegroundQuality == 3 ? 24
+            : (pc.depthOfFieldForegroundQuality == 2 ? 16
+            : (pc.depthOfFieldForegroundQuality == 0 ? 4 : 8))));
+    int pairs = spreadSamples / 2;
+    float searchRadius = (pc.depthOfFieldMode == 1 ? 24.0 : 14.0) * pc.depthOfFieldStrength;
+    vec2 direction = vec2(0.8775826, 0.4794255);
+    vec3 foregroundSum = vec3(0.0);
+    float foregroundWeight = 0.0;
+    for (int i = 0; i < pairs; ++i) {
+        float distance = searchRadius * (float(i) + 0.5) / float(pairs);
+        ivec2 offset = ivec2(round(distance * direction));
+        for (int side = 0; side < 2; ++side) {
+            ivec2 samplePixel = clamp(pixel + (side == 0 ? offset : -offset), ivec2(0), size - 1);
+            float sampleDepth = sceneDepth(samplePixel, size);
+            float separation = (sampleDepth - centerDepth)
+                    / max(sampleDepth - pc.depthOfFieldFarDepth, 1.0e-5);
+            if (separation > 0.18) {
+                float sampleRadius = depthOfFieldRadius(sampleDepth, focusDepth, size);
+                float coverage = smoothstep(0.0, 2.0, sampleRadius - length(vec2(offset)));
+                foregroundSum += imageLoad(rtImage, samplePixel).rgb * coverage;
+                foregroundWeight += coverage;
+            }
+        }
+        direction = vec2(direction.x * -0.73736886 - direction.y * 0.67549032,
+                direction.x * 0.67549032 + direction.y * -0.73736886);
+    }
+    float foregroundCoverage = min(0.75, 2.0 * foregroundWeight / float(spreadSamples));
+    return mix(blurred, foregroundSum / max(foregroundWeight, 1.0e-5), foregroundCoverage);
+}
+
 void main() {
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(outputImage);
@@ -118,6 +240,9 @@ void main() {
     }
 
     vec4 rt = imageLoad(rtImage, pix);
+    if (pc.depthOfField != 0 && pc.depthOfFieldStrength > 0.0) {
+        rt.rgb = applyDepthOfField(pix, size, rt.rgb);
+    }
     float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
     vec3 ldr = tonemap(rt.rgb, exposure);
     imageStore(outputImage, pix, vec4(ldr, 1.0));

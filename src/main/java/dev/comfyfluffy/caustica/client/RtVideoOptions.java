@@ -20,7 +20,7 @@ import net.minecraft.network.chat.Component;
  *
  * <p>Only settings the renderer re-reads per-frame are exposed here — toggles that would require a device or
  * buffer-pool rebuild (worker threads, OMM, max-entity capacities, PBR material flags) are intentionally
- * left to the {@code -Dcaustica.*} startup surface. DLSS-RR quality is the exception: the render resolution
+ * left to the {@code -Dcaustica.*} startup surface. DLSS-RR enablement and quality are exceptions: the render resolution
  * is queried from NGX for the chosen quality mode on every resize (see
  * {@code RtDlssRr.queryOptimalRenderSize}), and the RR feature itself is recreated live whenever
  * {@code quality} changes (see {@code RtDlssRr.ensureFeature}), so it is safe to expose here.
@@ -41,6 +41,13 @@ public final class RtVideoOptions {
             particles(),
             parallax(),
             parallaxDepth(),
+            depthOfField(),
+            depthOfFieldMode(),
+            depthOfFieldFocusDistance(),
+            depthOfFieldStrength(),
+            depthOfFieldQuality(),
+            depthOfFieldForegroundQuality(),
+            zoomFactor(),
             waterWaves(),
             waterWaveStrength(),
             waterFog(),
@@ -50,7 +57,16 @@ public final class RtVideoOptions {
             airFogStrength(),
             volumetricLight(),
             volumetricAbsorption(),
+            planarClouds(),
+            cloudQuality(),
+            cloudLayers(),
+            cloudSamples(),
+            cloudCoverage(),
+            cloudDensity(),
+            cloudSpeed(),
+            dlssRrEnabled(),
             dlssQuality(),
+            fgEnabled(),
             hdrEnabled(),
             hdrPaperWhite(),
             hdrPeak(),
@@ -145,6 +161,81 @@ public final class RtVideoOptions {
             percent -> setting.set(percent / 100.0f));
     }
 
+    private static OptionInstance<Boolean> depthOfField() {
+        return bool("caustica.options.rt.depthOfField", CausticaConfig.Rt.Composite.DEPTH_OF_FIELD);
+    }
+
+    private static OptionInstance<Integer> depthOfFieldMode() {
+        IntSetting setting = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_MODE;
+        return new OptionInstance<>(
+            "caustica.options.rt.depthOfFieldMode",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.depthOfFieldMode.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.depthOfFieldMode." + value)),
+            new OptionInstance.IntRange(0, 1),
+            Math.clamp(setting.value(), 0, 1),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> depthOfFieldFocusDistance() {
+        IntSetting setting = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOCUS_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.depthOfFieldFocusDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.depthOfFieldFocusDistance.tooltip")),
+            (caption, blocks) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.depthOfFieldFocusDistance.units", blocks)),
+            new OptionInstance.IntRange(8, 512),
+            Math.clamp(setting.value(), 8, 512),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> depthOfFieldStrength() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.depthOfFieldStrength",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.depthOfFieldStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Integer> depthOfFieldQuality() {
+        IntSetting setting = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.depthOfFieldQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.depthOfFieldQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.depthOfFieldQuality." + value)),
+            new OptionInstance.IntRange(0, 5),
+            Math.clamp(setting.value(), 0, 5),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> depthOfFieldForegroundQuality() {
+        IntSetting setting = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOREGROUND_QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.depthOfFieldForegroundQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.depthOfFieldForegroundQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.depthOfFieldForegroundQuality." + value)),
+            new OptionInstance.IntRange(0, 5),
+            Math.clamp(setting.value(), 0, 5),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> zoomFactor() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.ZOOM_FACTOR;
+        return new OptionInstance<>(
+            "caustica.options.rt.zoomFactor",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.zoomFactor.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f×", tenths / 10.0f))),
+            new OptionInstance.IntRange(10, 80),
+            Math.clamp(Math.round(setting.value() * 10.0f), 10, 80),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
     }
@@ -216,11 +307,74 @@ public final class RtVideoOptions {
             percent -> setting.set(percent / 100.0f));
     }
 
+    private static OptionInstance<Boolean> planarClouds() {
+        return bool("caustica.options.rt.planarClouds", CausticaConfig.Rt.Composite.PLANAR_CLOUDS);
+    }
+
+    private static OptionInstance<Integer> cloudQuality() {
+        IntSetting setting = CausticaConfig.Rt.Composite.CLOUD_QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.cloudQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.cloudQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.cloudQuality." + value)),
+            new OptionInstance.IntRange(0, 2),
+            Math.clamp(setting.value(), 0, 2),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> cloudCoverage() {
+        return cloudPercent("caustica.options.rt.cloudCoverage", CausticaConfig.Rt.Composite.CLOUD_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> cloudLayers() {
+        IntSetting setting = CausticaConfig.Rt.Composite.CLOUD_LAYERS;
+        return new OptionInstance<>(
+            "caustica.options.rt.cloudLayers",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.cloudLayers.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(Integer.toString(value))),
+            new OptionInstance.IntRange(1, 2),
+            Math.clamp(setting.value(), 1, 2),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> cloudSamples() {
+        IntSetting setting = CausticaConfig.Rt.Composite.CLOUD_SAMPLES;
+        return new OptionInstance<>(
+            "caustica.options.rt.cloudSamples",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.cloudSamples.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(Integer.toString(value))),
+            new OptionInstance.IntRange(8, 64),
+            Math.clamp(setting.value(), 8, 64),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> cloudDensity() {
+        return cloudPercent("caustica.options.rt.cloudDensity", CausticaConfig.Rt.Composite.CLOUD_DENSITY);
+    }
+
+    private static OptionInstance<Integer> cloudSpeed() {
+        return cloudPercent("caustica.options.rt.cloudSpeed", CausticaConfig.Rt.Composite.CLOUD_SPEED);
+    }
+
+    private static OptionInstance<Integer> cloudPercent(String key, FloatSetting setting) {
+        return new OptionInstance<>(key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            percent -> setting.set(percent / 100.0f));
+    }
+
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR
     // programming guide, Ray Reconstruction only supports Performance(0), Balanced(1), Quality(2),
     // Ultra-Performance(3), and DLAA(5) — Ultra Quality(4) is not a valid PerfQualityValue for RR (its
     // optimal-settings query returns a zeroed render size for it) and is deliberately excluded here.
     private static final List<Integer> DLSS_QUALITY_ORDER = List.of(3, 0, 1, 2, 5);
+
+    private static OptionInstance<Boolean> dlssRrEnabled() {
+        return bool("caustica.options.rt.dlssRr", CausticaConfig.Rt.DlssRr.ENABLED);
+    }
 
     private static OptionInstance<Integer> dlssQuality() {
         IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
@@ -234,6 +388,10 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, DLSS_QUALITY_ORDER.size() - 1),
             initialPosition,
             position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
+    }
+
+    private static OptionInstance<Boolean> fgEnabled() {
+        return bool("caustica.options.rt.frameGeneration", CausticaConfig.Rt.Fg.ENABLED);
     }
 
     private static OptionInstance<Boolean> hdrEnabled() {

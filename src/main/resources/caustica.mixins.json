@@ -6,6 +6,7 @@
 	"client": [
 		"BlockModelRenderStateMixin",
 		"BlockModelResolverMixin",
+		"CameraZoomMixin",
 		"CommandEncoderAccessor",
 		"ClientLevelInvoker",
 		"GameRendererMixin",
@@ -16,6 +17,7 @@
 		"LevelExtractorMixin",
 		"MinecraftMixin",
 		"MinecraftReloadMixin",
+		"MouseZoomMixin",
 		"ModelPartAccessor",
 		"OptionsMixin",
 		"OptionsSubScreenAccessor",

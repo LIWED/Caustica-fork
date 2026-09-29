@@ -205,6 +205,32 @@ final class RtSectionSnapshots {
             RtRainExposure.corners(sky, out);
         }
 
+        float rainExposureBeyondBlock(BlockPos pos, float localX, float localZ, int[] sky, float[] corners) {
+            int dx = (int) Math.floor(localX);
+            int dz = (int) Math.floor(localZ);
+            BlockPos.MutableBlockPos tile = new BlockPos.MutableBlockPos(
+                    pos.getX() + dx, pos.getY(), pos.getZ() + dz);
+            rainExposureCorners(tile, sky, corners);
+            return RtRainExposure.at(corners, localX - dx, localZ - dz);
+        }
+
+        void rainSideSamples(BlockPos pos, float nx, float nz, int[] sky) {
+            BlockPos.MutableBlockPos sample = new BlockPos.MutableBlockPos();
+            if (Math.abs(nx) >= Math.abs(nz)) {
+                int outsideX = pos.getX() + (nx > 0.0f ? 1 : -1);
+                for (int i = 0; i < 3; i++) {
+                    sample.set(outsideX, pos.getY(), pos.getZ() + i - 1);
+                    sky[i] = level.canSeeSky(sample) ? 1 : 0;
+                }
+            } else {
+                int outsideZ = pos.getZ() + (nz > 0.0f ? 1 : -1);
+                for (int i = 0; i < 3; i++) {
+                    sample.set(pos.getX() + i - 1, pos.getY(), outsideZ);
+                    sky[i] = level.canSeeSky(sample) ? 1 : 0;
+                }
+            }
+        }
+
         @Override
         public int getMinY() {
             return level.getMinY();

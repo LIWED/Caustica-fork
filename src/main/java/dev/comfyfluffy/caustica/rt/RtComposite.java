@@ -86,23 +86,6 @@ import java.nio.LongBuffer;
 public final class RtComposite {
     public static final RtComposite INSTANCE = new RtComposite();
     // Kept byte-for-byte equivalent to world.rmiss.slang; the atmospheric contract checks both sides.
-    private static final float WEATHER_RAIN_ATTENUATION = 0.72f;
-    private static final float WEATHER_THUNDER_ATTENUATION = 0.18f;
-    private static final float WEATHER_MIN_TRANSMITTANCE = 0.10f;
-    private static final float CLOUD_CLEAR_COVERAGE = 0.24f;
-    private static final float CLOUD_CLEAR_THICKNESS = 0.12f;
-    private static final float CLOUD_SPATIAL_SCALE = 0.0032f;
-    private static final float CLOUD_WIND_X = 0.0113f;
-    private static final float CLOUD_WIND_Z = -0.0067f;
-    private static final float CLOUD_RAIN_COVERAGE = 0.56f;
-    private static final float CLOUD_THUNDER_COVERAGE = 0.20f;
-    private static final float CLOUD_RAIN_THICKNESS = 0.60f;
-    private static final float CLOUD_THUNDER_THICKNESS = 0.28f;
-    private static final float CLOUD_EXTINCTION = 2.45f;
-    private static final float CLOUD_MAX_DISTANCE = 32768.0f;
-    private static final float CLOUD_DISTANCE_FADE_START = 27852.8f;
-    private static final float CLOUD_HORIZON_FADE_END = 0.035f;
-
     public static boolean enabled() {
         return CausticaConfig.Rt.ENABLED.value();
     }
@@ -827,7 +810,8 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
-        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view);
+        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view,
+                hdrDisplayImage.view, gDepth.view);
     }
 
     /**
@@ -919,6 +903,11 @@ public final class RtComposite {
             if (volumetricLight()) {
                 flags |= 1 << 7;
             }
+            if (CausticaConfig.Rt.Composite.PLANAR_CLOUDS.value()) {
+                flags |= 1 << 9;
+            }
+            flags |= CausticaConfig.Rt.Composite.CLOUD_QUALITY.value() << 10;
+            flags |= Math.round(CausticaConfig.Rt.Composite.CLOUD_DENSITY.value() * 100.0f) << 24;
             flags |= RtParallax.flags(CausticaConfig.Rt.Composite.PARALLAX.value(),
                     CausticaConfig.Rt.Composite.PARALLAX_DEPTH.value());
 
@@ -965,7 +954,9 @@ public final class RtComposite {
             SkyPush sky = skyPush(terrain);
             // Full X/Z rebase keeps the non-periodic cloud field continuous across terrain rebases.
             // Float integer precision becomes coarse only at extreme coordinates beyond ~16M blocks.
-            Float4 cloudAnchor = new Float4(terrain.blockX, terrain.blockZ, 0.0f, 0.0f);
+            Float4 cloudAnchor = new Float4(terrain.blockX, terrain.blockZ,
+                    CausticaConfig.Rt.Composite.CLOUD_COVERAGE.value(),
+                    CausticaConfig.Rt.Composite.CLOUD_SPEED.value());
             Float4 airVolume = new Float4(0.00035f * airFogStrength(), 0.004f,
                     64.0f - terrain.blockY, 512.0f);
             new WorldPushData(
@@ -989,6 +980,8 @@ public final class RtComposite {
                     sky.weather(),
                     sky.weatherColor(),
                     cloudAnchor,
+                    new Float4(CausticaConfig.Rt.Composite.CLOUD_LAYERS.value(),
+                            CausticaConfig.Rt.Composite.CLOUD_SAMPLES.value(), 0.0f, 0.0f),
                     airVolume,
                     waterParams,
                     waterAnchor,
@@ -1090,8 +1083,20 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
+                float focusDistance = CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOCUS_DISTANCE.value();
+                float focusViewZ = -focusDistance;
+                float focusClipW = frameProjection.m23() * focusViewZ + frameProjection.m33();
+                float focusDepth = Math.abs(focusClipW) > 1.0e-6f
+                        ? (frameProjection.m22() * focusViewZ + frameProjection.m32()) / focusClipW : 0.0f;
+                float farDepth = Math.abs(frameProjection.m23()) > 1.0e-6f
+                        ? frameProjection.m22() / frameProjection.m23() : 0.0f;
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
-                        CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom());
+                        CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom(),
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD.value() && debugView() == 0,
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_STRENGTH.value(),
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_QUALITY.value(),
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_MODE.value(), focusDepth, farDepth,
+                        CausticaConfig.Rt.Composite.DEPTH_OF_FIELD_FOREGROUND_QUALITY.value());
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1229,18 +1234,7 @@ public final class RtComposite {
             rb = 0.55f * moonPeak * moonStrength * trans[2];
             lightRadius = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
         }
-        float cloudDirect = cloudDirectTransmittance(rain, thunder);
-        rr *= cloudDirect;
-        rg *= cloudDirect;
-        rb *= cloudDirect;
-        float localCloud = cloudLocalTransmittance(
-                (float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
-                (float) (camZ - terrain.blockZ), lx, ly, lz,
-                cloudHeight - terrain.blockY, terrain.blockX, terrain.blockZ,
-                rain, thunder, cloudTime);
-        rr *= localCloud;
-        rg *= localCloud;
-        rb *= localCloud;
+        // Planar cloud shadows are evaluated from each shaded world point in the GPU NEE path.
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, dayFactor),
@@ -1253,77 +1247,6 @@ public final class RtComposite {
                 weather,
                 weatherColor,
                 wetness);
-    }
-
-    static float cloudDirectTransmittance(float rain, float thunder) {
-        return Mth.clamp(1.0f - rain * WEATHER_RAIN_ATTENUATION - thunder * WEATHER_THUNDER_ATTENUATION,
-                WEATHER_MIN_TRANSMITTANCE, 1.0f);
-    }
-
-    private static float cloudLocalTransmittance(float rayOriginX, float rayOriginY, float rayOriginZ,
-                                                  float dirX, float dirY, float dirZ,
-                                                  float cloudHeight, float cloudAnchorX, float cloudAnchorZ,
-                                                  float rain, float thunder, float cloudTime) {
-        if (dirY <= 0.0f) {
-            return 1.0f;
-        }
-        float tCloud = (cloudHeight - rayOriginY) / dirY;
-        if (tCloud <= 0.0f || tCloud > CLOUD_MAX_DISTANCE) {
-            return 1.0f;
-        }
-        float cloudPointX = rayOriginX + dirX * tCloud + cloudAnchorX;
-        float cloudPointZ = rayOriginZ + dirZ * tCloud + cloudAnchorZ;
-        float noise = cloudNoise3(cloudPointX * CLOUD_SPATIAL_SCALE + CLOUD_WIND_X * cloudTime,
-                cloudPointZ * CLOUD_SPATIAL_SCALE + CLOUD_WIND_Z * cloudTime);
-        float coverage = Mth.clamp(CLOUD_CLEAR_COVERAGE + rain * CLOUD_RAIN_COVERAGE
-                + thunder * CLOUD_THUNDER_COVERAGE, 0.0f, 1.0f);
-        float thickness = Mth.clamp(CLOUD_CLEAR_THICKNESS + rain * CLOUD_RAIN_THICKNESS
-                + thunder * CLOUD_THUNDER_THICKNESS, 0.0f, 1.0f);
-        float horizonFade = smoothstep(0.0f, CLOUD_HORIZON_FADE_END, dirY);
-        float distanceFade = 1.0f - smoothstep(CLOUD_DISTANCE_FADE_START, CLOUD_MAX_DISTANCE, tCloud);
-        float density = smoothstep(1.0f - coverage, 1.10f - coverage, noise)
-                * thickness * horizonFade * distanceFade;
-        return (float) Math.exp(-CLOUD_EXTINCTION * density);
-    }
-
-    private static float cloudNoise3(float x, float z) {
-        float n0 = valueNoise2(x, z);
-        float p1x = x * 0.73f - z * 1.87f + 17.31f;
-        float p1z = x * 1.87f + z * 0.73f + 17.31f;
-        float n1 = valueNoise2(p1x, p1z);
-        float p2x = x * -3.17f - z * 0.41f - 9.73f;
-        float p2z = x * 0.41f - z * 3.17f - 9.73f;
-        float n2 = valueNoise2(p2x, p2z);
-        return n0 * 0.57f + n1 * 0.29f + n2 * 0.14f;
-    }
-
-    private static float valueNoise2(float x, float z) {
-        float ix = (float) Math.floor(x);
-        float iz = (float) Math.floor(z);
-        float fx = x - ix;
-        float fz = z - iz;
-        float ux = fx * fx * (3.0f - 2.0f * fx);
-        float uz = fz * fz * (3.0f - 2.0f * fz);
-        float a = hash13(ix, iz, 0.0f);
-        float b = hash13(ix + 1.0f, iz, 0.0f);
-        float c = hash13(ix, iz + 1.0f, 0.0f);
-        float d = hash13(ix + 1.0f, iz + 1.0f, 0.0f);
-        return Mth.lerp(uz, Mth.lerp(ux, a, b), Mth.lerp(ux, c, d));
-    }
-
-    private static float hash13(float x, float y, float z) {
-        x = fract(x * 0.1031f);
-        y = fract(y * 0.1031f);
-        z = fract(z * 0.1031f);
-        float dot = x * (z + 31.32f) + y * (y + 31.32f) + z * (x + 31.32f);
-        x += dot;
-        y += dot;
-        z += dot;
-        return fract((x + y) * z);
-    }
-
-    private static float fract(float value) {
-        return value - (float) Math.floor(value);
     }
 
     private static Float3 linearColor(int packedRgb) {
