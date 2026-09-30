@@ -1,4 +1,91 @@
+> **Original author credit:** This project is based on [ComfyFluffy/Caustica](https://github.com/ComfyFluffy/Caustica). The original mod author is **i**. Thanks to the original author and contributors for their work. **LIWED** maintains this unofficial fork and adds features to the original mod. **0.5** is this fork's version number.
+
+[English](#english) | [简体中文](#中文)
+
+<a id="english"></a>
+
+# Caustica 0.5
+
+Caustica is a ray tracing mod for Minecraft 26.2. This fork keeps the original mod's ray tracing, DLSS Ray Reconstruction, Frame Generation, and HDR features, and adds water, weather, material, and camera effects with more options for everyday play and architectural photography.
+
+## Features added or improved in this fork
+
+- **Water effects:** Animated waves, shallow-water caustics, underwater fog, and light shafts. Adjust wave amplitude, water transparency, and water fog strength.
+- **Rain, snow, and wet surfaces:** Wet ground, reflective puddles, ripples, and rain splashes. Surfaces gradually dry after rain stops, and snowfall has improved motion and appearance.
+- **Clouds and weather lighting:** Clouds, cloud shadows, and sunlight occlusion respond to the weather, giving clear skies, rain, and thunderstorms different lighting and atmosphere.
+- **Fog and volumetric lighting:** Air fog changes with the time of day and weather. Adjust base density, rain and thunderstorm increases, sunrise/sunset and midday density, and light shaft attenuation.
+- **Material depth:** LabPBR resource packs with height information give surfaces such as brick and stone more visible relief, crevices, and shadows, with adjustable depth.
+- **Depth of field and camera controls:** Autofocus, fixed distant focus, adjustable depth of field, and camera zoom for buildings, close-ups, and miniature-style scenes.
+- **Organized settings:** Ray tracing options are grouped into rendering, materials, exposure, depth of field, water, fog, clouds, and debugging, with English and Chinese descriptions.
+- **Visual fixes:** Fixes fullscreen shaking with Frame Generation enabled and purple planes inside boats, and improves cloud shadow stability around sunrise and sunset.
+
+## Screenshots
+
+These in-game screenshots were taken with this fork. Appearance also depends on resource packs, scenes, and settings.
+
+### Rainy courtyard and interior lighting
+
+![Rainy courtyard and interior lighting](docs/gallery/0.5/2026-09-28_17.04.49.png)
+
+### Sunset windmills and depth of field
+
+![Sunset windmills and depth of field](docs/gallery/0.5/2026-09-29_20.49.39.png)
+
+### Daytime architecture and air fog
+
+![Daytime architecture and air fog](docs/gallery/0.5/2026-09-30_16.12.08.png)
+
+### Waterfront buildings, reflections, and shallow-water caustics
+
+![Waterfront buildings, reflections, and shallow-water caustics](docs/gallery/0.5/2026-09-30_19.38.45.png)
+
+### Offshore tower and distant scenery
+
+![Offshore tower and distant scenery](docs/gallery/0.5/2026-09-30_19.40.34.png)
+
+## Download and installation
+
+The mod JAR and source archive for this fork are available from [GitHub Releases](https://github.com/LIWED/Caustica-fork/releases).
+
+1. Use **Minecraft 26.2** and **Java 25 or newer**.
+2. Install **Fabric Loader 0.19.3 or newer** and the matching **Fabric API**.
+3. Put `caustica-0.5.jar` in your game's `mods` folder and remove or disable older Caustica JARs.
+4. Launch the game with the **Vulkan graphics backend**.
+5. Open Video Settings to adjust ray tracing, water, weather, and camera options.
+
+The source archive is for inspecting and modifying the project; it cannot be installed as a mod. Material depth effects require a LabPBR resource pack that includes height information.
+
+## Requirements
+
+- A GPU and driver with Vulkan ray tracing support.
+- DLSS Ray Reconstruction and Frame Generation require supported NVIDIA RTX hardware and drivers. Frame Generation remains experimental.
+- HDR requires an HDR-capable display with system HDR enabled. Linux also requires a native Wayland session with HDR support.
+- This mod runs on the client only. Other mods that take over world rendering or the graphics backend may conflict.
+- If the game switches back to OpenGL after a crash, re-enable the Vulkan backend.
+
+## Links
+
+- [This fork and issue tracker](https://github.com/LIWED/Caustica-fork)
+- [Original project](https://github.com/ComfyFluffy/Caustica)
+- [Original project's Discord](https://discord.gg/SeWCjyKu2)
+- [Original mod on Modrinth](https://modrinth.com/mod/caustica)
+- [Original mod on CurseForge](https://www.curseforge.com/minecraft/mc-mods/caustica/preview)
+
+## License
+
+Project-owned source code and documentation remain licensed under **GNU LGPL v3.0 or later**. See [LICENSE.md](LICENSE.md), [COPYING](COPYING), and [COPYING.LESSER](COPYING.LESSER).
+
+NVIDIA DLSS/NGX components bundled with releases are governed by NVIDIA's own license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+---
+
+<a id="中文"></a>
+
+## 简体中文
+
 > **原作者声明：** 本项目基于 [ComfyFluffy/Caustica](https://github.com/ComfyFluffy/Caustica)，原 Mod 作者为 **i**。感谢原作者及贡献者的工作。此仓库由 **LIWED** 在原 Mod 基础上添加功能并维护，属于非官方分支，版本 **0.5** 为本分支版本。
+
+[English](#english) | [简体中文](#中文)
 
 # Caustica 0.5
 

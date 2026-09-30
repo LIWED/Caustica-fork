@@ -6,6 +6,7 @@
 - 基线：官方上游 Wavefront 渲染架构快照 `5d6bf62`
 - 移植来源：早期实验分支 0.3.2
 - 当前开发版本：0.5
+- 2026-09-30 README 双语补充：英文版优先展示，完整中文版保留并提供语言跳转；两版均包含原作者声明、新增功能、安装要求、许可说明及 5 张截图。
 - 2026-09-30 0.5：用户已确认 README 并授权推送开发分支、合并 main 和发布源码 ZIP/Mod JAR。核对原项目 LGPL-3.0-or-later，保留原署名与许可证，补充 LIWED 修改日期及 SDK 原始许可文本；对应源码与 JAR 同版发布。71 项 Java 测试及完整构建通过；README 展示指定 5 张截图，船紫块与 FG 全屏抖动已获用户实机确认。JAR 仅包含已构建的 Windows x64 原生库，SHA-256 AFD17B2E9CBF30F9BE43F0F6328A40158138D6D6F1CAC5CBE3760EBC358340E7；LGPL/原版权/NVIDIA 许可文本及 22 个打包 Shader 已核验。Release https://github.com/LIWED/Caustica-fork/releases/tag/v0.5 已发布，源码提交 54c3adc，GitHub 附件 digest 与本地 SHA-256 一致；开发分支已推送并快进合并 main。
 - 2026-09-30 船内部紫块修正（WG-027）：核对 MC 26.2 字节码，BoatRenderer 使用 RenderTypes.waterMask()，该 pass 仅写深度、不写颜色且无 Sampler0；旧版按 water_mask 纹理路径过滤永不命中。改为在实体捕获入口按实际 RenderType 单例排除，消费本次提交排序，恢复 textureLocation 的 private 可见性。新增真实 waterMask 提交回归，旧过滤失败、新过滤通过；71 项 Java 测试与完整构建通过；核对新实体捕获类、版本、原生库、中英资源及 22 个打包 Shader，已部署 caustica-0.4.4-boat-water-mask-fix-test.jar，旧 boat-water-mask-test.jar 禁用保留。用户于 2026-09-30 反馈“可以了”，船紫块修正已通过实机复测；船舱漏水未单独反馈。
 - 2026-09-30 视频设置分类：光线追踪的 44 个现有控件按渲染与性能、材质与光照、曝光与 HDR、景深与缩放、水体、雾气与体积光、云层与云影、调试分为 8 组；各组独立标题、双列排列，仍使用同一视频设置页的滚动列表，无二级页面。配置键、范围、默认值、回调及保存方式不变；新增中英文分类标题，44 个控件完整性/唯一性及中英文标题检查通过，70 项 Java 测试和完整构建通过，已部署当前测试包；实机布局待查看。
