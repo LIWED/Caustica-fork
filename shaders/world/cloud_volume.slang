@@ -29,6 +29,10 @@ static const float CLOUD_DETAIL_WARP = 28.0;
 static const float CLOUD_LOW_THICKNESS = 46.0;
 static const float CLOUD_HIGH_THICKNESS = 18.0;
 static const float CLOUD_VERTICAL_SCALE = 0.052;
+// Smooth grazing-angle projection. Unlike a fixed reach cap, this bounds the
+// derivative before either deck reaches the horizon, with no per-deck threshold.
+// It deliberately shortens low-angle shadows; it is not a physical penumbra.
+static const float CLOUD_SHADOW_ELEVATION_SMOOTH = 0.15;
 // Minimum optical-thickness factor at grazing view angles. This used to be 0.22, which is what kept
 // the deck looking thin: most of the time the camera looks near-horizontally, so the sheet was being
 // attenuated to a fifth of its opacity exactly where it fills the screen. Raising it also makes the
@@ -119,9 +123,18 @@ float cloudLayerDensity(WorldPush push, float2 worldXZ, float heightOffset, int 
     float2 p = cloudCoordinates(push, worldXZ, layer);
     float body = planarNoise2(p);
     float threshold = 1.0 - cover;
-    if (body < threshold - 0.13) return 0.0;
+    float humidity = clamp(push.weather.x * 0.7 + push.weather.y * 0.3, 0.0, 1.0);
+    // Band-limit grazing shadows in the density evaluation itself: retain the
+    // world-space body, soften its edge, and fade high-frequency detail. No
+    // extra noise taps, random samples, or history are introduced.
+    float detailWeight = viewDetail ? 1.0 : smoothstep(0.05, 0.25, dir.y);
+    float edgeHalfWidth = lerp(0.16, 0.08, detailWeight);
+    // Only skip when even the largest detail/humidity perturbation cannot enter
+    // the mask. The old -0.13 cutoff could discard a nonzero cloud abruptly.
+    float maxDetail = ((quality >= 1 ? 0.15 : 0.0) + (quality >= 2 ? 0.045 : 0.0)) * detailWeight;
+    if (body + maxDetail + humidity * 0.025 <= threshold + 0.01 - edgeHalfWidth) return 0.0;
     float detail = 0.5, fine = 0.5;
-    if (quality >= 1) {
+    if (quality >= 1 && detailWeight > 0.0) {
         float2 detailXZ = worldXZ;
         if (viewDetail) {
             // Compress only the high-frequency detail toward the camera, keeping
@@ -142,11 +155,15 @@ float cloudLayerDensity(WorldPush push, float2 worldXZ, float heightOffset, int 
                                      v.z) + 17.3);
         if (quality >= 2) fine = planarNoise3(v * 4.17 - 9.7);
     }
-    float humidity = clamp(push.weather.x * 0.7 + push.weather.y * 0.3, 0.0, 1.0);
+    // Fade every use of detail, including cirrus opacity and anvil strength, so
+    // skipping detail taps at zero weight cannot introduce an angular seam.
+    detail = lerp(0.5, detail, detailWeight);
+    fine = lerp(0.5, fine, detailWeight);
     float shaped = body + (detail - 0.5) * (quality >= 1 ? 0.30 : 0.0)
                         + (fine - 0.5) * (quality >= 2 ? 0.09 : 0.0)
                         + humidity * 0.025;
-    float mask = smoothstep(threshold - 0.07, threshold + 0.09, shaped);
+    float mask = smoothstep(threshold + 0.01 - edgeHalfWidth,
+                            threshold + 0.01 + edgeHalfWidth, shaped);
     // A dark, uneven underside and an adjacent broad anvil hint at vertical
     // structure without sampling an actual volume.
     float tower = layer == 0 ? smoothstep(0.52, 0.79, body) : 0.0;
@@ -193,14 +210,19 @@ public float cloudSunTransmittance(WorldPush push, float3 worldPos, float3 light
     float strength = float((push.flags >> 24u) & 255u) * 0.01;
     float opticalDepth = 0.0;
     for (int layer = 0; layer < layers; ++layer) {
-        // Intersect the layer's mid-plane rather than its base. The visible deck is a slab, so the
-        // midpoint is what the shadow should correspond to; sampling the base plane instead also makes
-        // the shadow slide whenever the weather-driven deck height moves, which reads as stepping.
+        // Intersect the layer's mid-plane rather than its base: the visible deck is a slab, so the
+        // midpoint is what the shadow should correspond to.
         float midOffset = cloudLayerThickness(push, layer) * 0.5;
-        if (abs(stableDir.y) < 1.0e-5) continue;
-        float t = (cloudPlaneHeight(push, layer) + midOffset - worldPos.y) / stableDir.y;
-        if (t <= 0.0 || t >= CLOUD_FAR) continue;
-        float2 xz = worldPos.xz + stableDir.xz * t;
+        float heightDelta = cloudPlaneHeight(push, layer) + midOffset - worldPos.y;
+        if (heightDelta <= 0.0) continue;
+        // sqrt(y*y + e*e) replaces the singular 1/y projection, not the light
+        // direction used for lighting or visible clouds. Same smooth angular
+        // response for both layers; still exactly one density sample per layer.
+        float elevation = sqrt(stableDir.y * stableDir.y
+                             + CLOUD_SHADOW_ELEVATION_SMOOTH * CLOUD_SHADOW_ELEVATION_SMOOTH);
+        float t = heightDelta / elevation;
+        float2 offset = stableDir.xz * t;
+        float2 xz = worldPos.xz + offset;
         float density = cloudLayerDensity(push, xz, midOffset, layer, quality, false,
                                           worldPos, stableDir, t);
         // The 1/sin(sun) path stretch is floored well above the true grazing value: with the thicker

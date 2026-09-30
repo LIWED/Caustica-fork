@@ -6,7 +6,7 @@ package dev.comfyfluffy.caustica.client;
  * <p>Generates a Halton(2,3) low-discrepancy sequence in render-pixel space, with the DLSS phase-count
  * rule {@code ceil(8 * (display/render)^2)} and RR's recommended floor of 32 phases.
  * {@link dev.comfyfluffy.caustica.rt.RtComposite} reads the per-frame offset, applies it to the primary ray in the
- * path-tracing shader, and reports it to DLSS-RR's evaluate.
+ * path-tracing shader, and reports the opposite projection/image displacement to DLSS-RR.
  */
 public final class CausticaJitter {
 	public static final CausticaJitter INSTANCE = new CausticaJitter();
@@ -18,7 +18,7 @@ public final class CausticaJitter {
 	private CausticaJitter() {
 	}
 
-	/** Advance one frame. Call once per frame before the level projection is built. */
+	/** Advance one frame. Call once per RT frame before the primary-ray dispatch. */
 	public void prepare(int renderWidth, int renderHeight, int displayWidth) {
 		int phaseCount = jitterPhaseCount(renderWidth, displayWidth);
 		int index = (this.frameIndex++ % phaseCount) + 1; // Halton(0) is degenerate
@@ -26,7 +26,7 @@ public final class CausticaJitter {
 		this.pixelsY = halton(index, 3) - 0.5f;
 	}
 
-	/** Jitter offset in render-pixel space, applied to the primary ray and reported to RR evaluate. */
+	/** Sample-location offset in render pixels; RR evaluate receives the opposite image displacement. */
 	public float jitterPixelsX() {
 		return this.pixelsX;
 	}

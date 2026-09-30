@@ -377,6 +377,9 @@ tasks.named("jar", Jar).configure {
 	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
 		into "META-INF"
 	}
+	from(rootProject.file("docs/licenses/NVIDIA-DLSS-LICENSE.txt")) {
+		into "META-INF"
+	}
 }
 
 publishing {

@@ -4,6 +4,10 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 Copyright (c) 2026 ComfyFluffy and contributors
 
+Unofficial modifications by LIWED, release 0.5, dated 2026-09-30.
+The original copyright notice and LGPL-3.0-or-later license are retained.
+See docs/CHANGELOG.md for the changes made in this fork.
+
 Caustica's project-owned source code and documentation are licensed under the
 GNU Lesser General Public License, version 3.0 or any later version published by
 the Free Software Foundation.

@@ -144,6 +144,13 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         if (capture == null) {
             return;
         }
+        // BoatRenderer submits a depth-only water patch with no Sampler0 texture. It suppresses
+        // rasterised water inside the hull; capturing it as visible RT geometry produces purple fill.
+        // Match the actual vanilla render type, before material resolution or model emission.
+        if (renderType == RenderTypes.waterMask()) {
+            pendingOrder = 0;
+            return;
+        }
         if (outlineColor != 0) {
             this.outlineColor = outlineColor;
         }

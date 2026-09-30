@@ -29,49 +29,47 @@ public final class RtVideoOptions {
     private RtVideoOptions() {
     }
 
-    /** Runtime-tunable RT options, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
+    /** One inline group on the video settings page; each group starts a fresh pair of option columns. */
+    public record Section(String titleKey, OptionInstance<?>[] options) {
+    }
+
+    public static List<Section> runtimeSections() {
+        return List.of(
+            new Section("caustica.options.rt.group.render", new OptionInstance<?>[] {
+                spp(), maxBounces(), entities(), particles(), dlssRrEnabled(), dlssQuality(), fgEnabled(),
+            }),
+            new Section("caustica.options.rt.group.materials", new OptionInstance<?>[] {
+                parallax(), parallaxDepth(), sunSize(),
+            }),
+            new Section("caustica.options.rt.group.display", new OptionInstance<?>[] {
+                exposureMode(), manualEv(), hdrEnabled(), hdrPaperWhite(), hdrPeak(),
+            }),
+            new Section("caustica.options.rt.group.camera", new OptionInstance<?>[] {
+                depthOfField(), depthOfFieldMode(), depthOfFieldFocusDistance(), depthOfFieldStrength(),
+                depthOfFieldQuality(), depthOfFieldForegroundQuality(), zoomFactor(),
+            }),
+            new Section("caustica.options.rt.group.water", new OptionInstance<?>[] {
+                waterWaves(), waterWaveStrength(), waterFog(), waterFogStrength(), waterTransparency(),
+            }),
+            new Section("caustica.options.rt.group.atmosphere", new OptionInstance<?>[] {
+                airFog(), airFogStrength(), airFogBase(), airFogRain(), airFogThunder(), airFogMorning(),
+                airFogNoon(), volumetricLight(), volumetricAbsorption(),
+            }),
+            new Section("caustica.options.rt.group.clouds", new OptionInstance<?>[] {
+                planarClouds(), cloudQuality(), cloudLayers(), cloudSamples(), cloudCoverage(),
+                cloudDensity(), cloudSpeed(),
+            }),
+            new Section("caustica.options.rt.group.debug", new OptionInstance<?>[] {
+                debugView(),
+            })
+        );
+    }
+
+    /** Flat view retained for callers that do not display group headings. */
     public static OptionInstance<?>[] runtimeOptions() {
-        return new OptionInstance<?>[] {
-            exposureMode(),
-            manualEv(),
-            spp(),
-            maxBounces(),
-            sunSize(),
-            entities(),
-            particles(),
-            parallax(),
-            parallaxDepth(),
-            depthOfField(),
-            depthOfFieldMode(),
-            depthOfFieldFocusDistance(),
-            depthOfFieldStrength(),
-            depthOfFieldQuality(),
-            depthOfFieldForegroundQuality(),
-            zoomFactor(),
-            waterWaves(),
-            waterWaveStrength(),
-            waterFog(),
-            waterFogStrength(),
-            waterTransparency(),
-            airFog(),
-            airFogStrength(),
-            volumetricLight(),
-            volumetricAbsorption(),
-            planarClouds(),
-            cloudQuality(),
-            cloudLayers(),
-            cloudSamples(),
-            cloudCoverage(),
-            cloudDensity(),
-            cloudSpeed(),
-            dlssRrEnabled(),
-            dlssQuality(),
-            fgEnabled(),
-            hdrEnabled(),
-            hdrPaperWhite(),
-            hdrPeak(),
-            debugView(),
-        };
+        return runtimeSections().stream()
+                .flatMap(section -> java.util.Arrays.stream(section.options()))
+                .toArray(OptionInstance<?>[]::new);
     }
 
     private static OptionInstance<String> exposureMode() {
@@ -290,6 +288,41 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 200),
             Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
             percent -> setting.set(percent / 100.0f));
+    }
+
+    /**
+     * Percent-labelled option over one of the fog factor settings. Density is fog strength x base x
+     * weather x time of day; these expose the last three plus the base scale so the haze can be shaped
+     * in-game instead of by editing constants and rebuilding.
+     */
+    private static OptionInstance<Integer> fogFactor(String key, FloatSetting setting, int maxPercent) {
+        return new OptionInstance<>(
+            "caustica.options.rt." + key,
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt." + key + ".tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, maxPercent),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, maxPercent),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Integer> airFogBase() {
+        return fogFactor("airFogBase", CausticaConfig.Rt.Composite.AIR_FOG_BASE, 400);
+    }
+
+    private static OptionInstance<Integer> airFogRain() {
+        return fogFactor("airFogRain", CausticaConfig.Rt.Composite.AIR_FOG_RAIN, 400);
+    }
+
+    private static OptionInstance<Integer> airFogThunder() {
+        return fogFactor("airFogThunder", CausticaConfig.Rt.Composite.AIR_FOG_THUNDER, 400);
+    }
+
+    private static OptionInstance<Integer> airFogMorning() {
+        return fogFactor("airFogMorning", CausticaConfig.Rt.Composite.AIR_FOG_MORNING, 300);
+    }
+
+    private static OptionInstance<Integer> airFogNoon() {
+        return fogFactor("airFogNoon", CausticaConfig.Rt.Composite.AIR_FOG_NOON, 150);
     }
 
     private static OptionInstance<Boolean> volumetricLight() {

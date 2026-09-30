@@ -61,14 +61,12 @@ public AirVolumeResult integrateAirVolume(float3 ro, float3 rd, float distance, 
         return result;
     }
     float safeDistance = min(distance, worldPush.airVolume.w);
-    float rain = clamp(worldPush.weather.x, 0.0, 1.0);
-    float thunder = clamp(worldPush.weather.y, 0.0, 1.0);
-    // Rain and thunder thicken the air far more than the old linear ramp suggested. The user-visible
-    // effect is visibility loss, and at the previous 0.65/0.35 weights a thunderstorm removed only
-    // ~30% of the contrast at 512 blocks — indistinguishable from no fog, while clear weather was at
-    // 18%. These weights make the wet-weather haze actually read as haze.
-    float weatherDensity = min(1.0 + rain * 1.5 + thunder * 1.5, 4.0);
-    float baseDensity = max(worldPush.airVolume.x, 0.0) * weatherDensity;
+    // Density is assembled on the CPU (fog strength x base x weather x time of day) so every factor is a
+    // user-facing setting; this pass consumes the result. cloudTuning.z carries the same product without
+    // the base coefficient, which is what the shafts scale their brightness by so fog and beams stay one
+    // medium instead of two independent knobs.
+    float densityScale = max(worldPush.cloudTuning.z, 0.0);
+    float baseDensity = max(worldPush.airVolume.x, 0.0);
     float heightFalloff = max(worldPush.airVolume.y, 0.0);
     float3 fogColor = max(worldPush.weatherColor.xyz, 0.0);
     if (fogEnabled && baseDensity > 0.0) {
@@ -103,9 +101,13 @@ public AirVolumeResult integrateAirVolume(float3 ro, float3 rd, float distance, 
     float3 normalizedLight = clamp(rawLightRadiance / 21.0, 0.0, 4.0) * cloudShade;
     float phase = clamp(4.0 * PI * hg(dot(rd, lightDir), AIR_VOLUME_MIE_G), 0.05, 5.0);
     float absorption = clamp(worldPush.waterTuning.w, 0.0, 2.0);
-    // Less absorption leaves more of the intercepted celestial light to scatter toward the eye.
-    float scatterShare = 2.0 / (1.0 + absorption);
-    float shaftDensity = AIR_VOLUME_SHAFT_DENSITY * weatherDensity;
+    // One medium, two effects: the shafts share the fog's density rather than carrying their own, so
+    // wherever the air is thick enough to see haze it also catches a beam. Denser air scatters more of
+    // the intercepted light toward the eye, so thicker fog makes a shaft *brighter* rather than
+    // dimmer — that is what puts visible columns in morning and rain while noon has almost none.
+    float fogGain = clamp(densityScale, 0.0, 3.0);
+    float scatterShare = 2.0 / (1.0 + absorption) * (0.35 + 0.65 * fogGain);
+    float shaftDensity = AIR_VOLUME_SHAFT_DENSITY * densityScale;
     float shaftDistance = min(safeDistance, AIR_VOLUME_SHAFT_DISTANCE);
     for (uint slice = 0u; slice < AIR_VOLUME_SLICE_COUNT; ++slice) {
         uint jitterSeed = seed ^ worldPush.frameIndex * 747796405u ^ slice * 2891336453u;

@@ -154,8 +154,8 @@ public final class RtComposite {
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
     // tilted by SUN_NOON_SOUTH_TILT. Pushed so the sky shader can build the sun/moon square's tangent
     // frame (right = travel direction) and wheel the starfield. = normalize(noonDir x sunriseDir).
-    // Sign of the sub-pixel jitter as reported to DLSS-RR + applied to the primary ray, mirroring the
-    // validated DLSS-SR convention (Vulkan flipped clip space wants Y negated).
+    // Signs of the primary-ray sample offset. RR receives the opposite projection/image
+    // displacement; changing the Halton orientation alone is not a jitter-convention fix.
     private static float jitterSignX() {
         return CausticaConfig.Rt.Composite.JITTER_SIGN_X.value();
     }
@@ -274,9 +274,7 @@ public final class RtComposite {
     private int fgInterpH = -1;
     private int fgInterpFormat = Integer.MIN_VALUE;
     private boolean fgReset = true;
-    private final Matrix4f fgClipToPrev = new Matrix4f();
-    private final Matrix4f fgPrevToClip = new Matrix4f();
-    private final Matrix4f fgMatTmp = new Matrix4f();
+    private final RtFgCamera fgCamera = new RtFgCamera();
     // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
     // specular albedo, and reflection motion.
     private RtImage gNormal;
@@ -982,8 +980,22 @@ public final class RtComposite {
             Float4 cloudAnchor = new Float4(terrain.blockX, terrain.blockZ,
                     CausticaConfig.Rt.Composite.CLOUD_COVERAGE.value(),
                     CausticaConfig.Rt.Composite.CLOUD_SPEED.value());
-            Float4 airVolume = new Float4(0.00035f * airFogStrength(), 0.004f,
-                    64.0f - terrain.blockY, 512.0f);
+            // Air fog density = strength x base x weather x time of day, every factor a setting so the
+            // haze can be shaped in-game. Java knows rain, thunder and the sun height, so the whole
+            // product is computed here and the shader just consumes a density. cloudTuning.z carries the
+            // dimensionless scale (the product before the base coefficient), which the light shafts key
+            // their brightness off so fog and beams stay one medium. 0.0008 is the reference density at
+            // base = strength = 1.
+            float fogSunHeight = Math.max(sky.sunDir().y(), 0.0f);
+            float fogLowSun = 1.0f - smoothstep(0.05f, 0.45f, fogSunHeight);
+            float fogWeather = 1.0f
+                    + sky.weather().x() * CausticaConfig.Rt.Composite.AIR_FOG_RAIN.value()
+                    + sky.weather().y() * CausticaConfig.Rt.Composite.AIR_FOG_THUNDER.value();
+            float fogTime = Mth.lerp(fogLowSun, CausticaConfig.Rt.Composite.AIR_FOG_NOON.value(),
+                    CausticaConfig.Rt.Composite.AIR_FOG_MORNING.value());
+            float fogScale = fogWeather * fogTime;
+            Float4 airVolume = new Float4(0.0008f * CausticaConfig.Rt.Composite.AIR_FOG_BASE.value()
+                    * airFogStrength() * fogScale, 0.004f, 64.0f - terrain.blockY, 512.0f);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1006,7 +1018,7 @@ public final class RtComposite {
                     sky.weatherColor(),
                     cloudAnchor,
                     new Float4(CausticaConfig.Rt.Composite.CLOUD_LAYERS.value(),
-                            CausticaConfig.Rt.Composite.CLOUD_SAMPLES.value(), 0.0f, 0.0f),
+                            CausticaConfig.Rt.Composite.CLOUD_SAMPLES.value(), fogScale, 0.0f),
                     airVolume,
                     waterParams,
                     waterAnchor,
@@ -1077,6 +1089,8 @@ public final class RtComposite {
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
                     rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), output, gDepth, gMotion, gAlbedo,
                             gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
+                            // Ray sampling at pixel+j moves the projected image by -j. NGX wants
+                            // that image/projection displacement in render pixels (X right, Y down).
                             -jitterX, -jitterY, frameViewRotation, frameProjection);
                 }
             }
@@ -1264,10 +1278,13 @@ public final class RtComposite {
             atmosphereTransmittance(sunX, sunY, sunZ, trans);
             float fade = smoothstep(-0.05f, 0.005f, sunY);
             float sunPeak = 21.0f;
+            // Push the low-sun colour warmer than pure atmospheric transmittance gives, so sunrise and
+            // sunset read distinctly golden rather than merely dimmer.
+            float warmth = 1.0f - smoothstep(0.02f, 0.30f, sunY);
             lx = sunX; ly = sunY; lz = sunZ;
-            rr = sunPeak * trans[0] * fade;
-            rg = sunPeak * trans[1] * fade;
-            rb = sunPeak * trans[2] * fade;
+            rr = sunPeak * trans[0] * fade * (1.0f + 0.35f * warmth);
+            rg = sunPeak * trans[1] * fade * (1.0f + 0.08f * warmth);
+            rb = sunPeak * trans[2] * fade * (1.0f - 0.20f * warmth);
             lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
@@ -1913,8 +1930,8 @@ public final class RtComposite {
      * never happen once RT is actively producing frames (DLSSG feature creation failing, an out-of-range
      * index, the evaluate itself failing) — the caller treats those as fatal and disables FG for the
      * session, same as any other FG present-record failure, rather than silently degrading to duplicated
-     * (non-interpolated) frames forever with no visible sign anything is wrong. Rotation-only matrices;
-     * camera translation is carried by the mvecs (cameraMotionIncluded).
+     * (non-interpolated) frames forever with no visible sign anything is wrong. Jitter-free camera
+     * transforms include rotation, projection changes and the same translation as the motion guides.
      *
      * <p>{@code hdrBackbuffer} selects the HDR path. Per the DLSS-FG programming guide's HDR section, scRGB is
      * explicitly unsupported as a DLSS-FG input ("not suitable as inputs to DLSS-FG" — it wants a
@@ -1944,12 +1961,10 @@ public final class RtComposite {
                 throw new IllegalStateException("DLSSG feature not ready (ensureFgFeature failed)");
             }
             ensureFgInterp(ctx, count, swapW, swapH, fmt);
-            // clipToPrevClip = prevVP * inverse(curVP); prevClipToClip = curVP * inverse(prevVP). Both from
-            // the (rotation-only, camera-relative) MV view-projections, so jitter-free.
-            fgMatTmp.set(mvCurProjView).invert();
-            fgClipToPrev.set(mvPrevProjView).mul(fgMatTmp);
-            fgMatTmp.set(mvPrevProjView).invert();
-            fgPrevToClip.set(mvCurProjView).mul(fgMatTmp);
+            // updateMotion already advanced mvPrevProjView for the next frame. mvPushMatrix retains
+            // this frame's actual previous VP; include the same camera delta as the motion guides.
+            fgCamera.prepare(frameProjection, mvCurProjView, mvPushMatrix,
+                    mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ);
         }
         if (index < 1 || index > fgInterp.length || fgInterp[index - 1] == null) {
             throw new IllegalStateException(
@@ -1979,7 +1994,7 @@ public final class RtComposite {
                 swapW, swapH, renderW, renderH, count, index, 1.0f, 1.0f,
                 true /* depthInverted (reversed-Z) */, hdrBackbuffer /* colorBuffersHDR */,
                 true /* cameraMotionIncluded (in mvecs) */, fgReset,
-                fgClipToPrev, fgPrevToClip);
+                fgCamera.viewToClip, fgCamera.clipToView, fgCamera.clipToPrev, fgCamera.prevToClip);
         if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
             throw new IllegalStateException("vkEndCommandBuffer(fg interpolate) failed");
         }

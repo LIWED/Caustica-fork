@@ -15,6 +15,10 @@ The NVIDIA SDK components remain subject to the NVIDIA RTX SDKs license:
 
 <https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt>
 
+The license text supplied with the SDK used for this release is included in
+[docs/licenses/NVIDIA-DLSS-LICENSE.txt](docs/licenses/NVIDIA-DLSS-LICENSE.txt).
+Mod JARs include the same text at `META-INF/NVIDIA-DLSS-LICENSE.txt`.
+
 The LGPL license grant for Caustica does not grant rights to NVIDIA SDK
 components. Redistribution and use of those components must comply with
 NVIDIA's license terms.

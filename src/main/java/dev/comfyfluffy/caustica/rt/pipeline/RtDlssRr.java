@@ -74,7 +74,8 @@ public final class RtDlssRr {
     /**
      * Record a DLSS-RR evaluation: denoise + upscale the noisy path-traced color (at render res) using
      * the guide buffers, writing the display-res result into {@code out}. {@code jitterX/jitterY} is the
-     * sub-pixel camera jitter applied to the primary ray this frame, in render pixels. Returns false
+     * projection/image displacement this frame, in render pixels (X right, Y down), the negative of
+     * the primary ray's sample-location offset. Returns false
      * (disabling RR) on failure. MVs are already in render-pixel space (scale 1).
      */
     public boolean evaluate(long cmd, RtImage color, RtImage depth, RtImage motion,

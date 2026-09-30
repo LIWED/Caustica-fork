@@ -569,6 +569,19 @@ public final class CausticaConfig {
                     bool("caustica.rt.airFog", "composite.air-fog", true);
             public static final FloatSetting AIR_FOG_STRENGTH =
                     clampedFloat("caustica.rt.airFogStrength", "composite.air-fog-strength", 1.0f, 0.0f, 2.0f);
+            // Fog density = strength x base x weather x time of day. These expose the factors that used
+            // to be constants in the shader, so the shape of the haze is tunable in-game rather than by
+            // editing and rebuilding.
+            public static final FloatSetting AIR_FOG_BASE =
+                    clampedFloat("caustica.rt.airFogBase", "composite.air-fog-base", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting AIR_FOG_RAIN =
+                    clampedFloat("caustica.rt.airFogRain", "composite.air-fog-rain", 1.5f, 0.0f, 4.0f);
+            public static final FloatSetting AIR_FOG_THUNDER =
+                    clampedFloat("caustica.rt.airFogThunder", "composite.air-fog-thunder", 1.5f, 0.0f, 4.0f);
+            public static final FloatSetting AIR_FOG_MORNING =
+                    clampedFloat("caustica.rt.airFogMorning", "composite.air-fog-morning", 1.0f, 0.0f, 3.0f);
+            public static final FloatSetting AIR_FOG_NOON =
+                    clampedFloat("caustica.rt.airFogNoon", "composite.air-fog-noon", 0.18f, 0.0f, 1.5f);
             public static final BooleanSetting VOLUMETRIC_LIGHT =
                     bool("caustica.rt.volumetricLight", "composite.volumetric-light", true);
             public static final FloatSetting VOLUMETRIC_ABSORPTION =

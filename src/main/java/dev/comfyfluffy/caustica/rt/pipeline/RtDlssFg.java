@@ -169,11 +169,14 @@ public final class RtDlssFg {
             int width, int height, int mvecDepthWidth, int mvecDepthHeight,
             int multiFrameCount, int multiFrameIndex, float mvScaleX, float mvScaleY,
             boolean depthInverted, boolean colorBuffersHDR, boolean cameraMotionIncluded, boolean reset,
+            Matrix4fc cameraViewToClip, Matrix4fc clipToCameraView,
             Matrix4fc clipToPrevClip, Matrix4fc prevClipToClip) {
         if (!isReady()) {
             return false;
         }
         try (Arena arena = Arena.ofConfined()) {
+            MemorySegment viewToClip = matrixSegment(arena, cameraViewToClip);
+            MemorySegment clipToView = matrixSegment(arena, clipToCameraView);
             MemorySegment clipToPrev = matrixSegment(arena, clipToPrevClip);
             MemorySegment prevToClip = matrixSegment(arena, prevClipToClip);
             int rc = lib.evaluateDlssg(cmd, feature,
@@ -187,7 +190,7 @@ public final class RtDlssFg {
                     width, height, mvecDepthWidth, mvecDepthHeight,
                     multiFrameCount, multiFrameIndex, mvScaleX, mvScaleY,
                     depthInverted ? 1 : 0, colorBuffersHDR ? 1 : 0, cameraMotionIncluded ? 1 : 0, reset ? 1 : 0,
-                    MemorySegment.NULL, MemorySegment.NULL, clipToPrev, prevToClip);
+                    viewToClip, clipToView, clipToPrev, prevToClip);
             if (NgxRuntime.ngxFailed(rc)) {
                 throw new IllegalStateException("ngxshim_evaluate_dlssg failed: 0x" + Integer.toHexString(rc)
                         + " last=0x" + Integer.toHexString(lib.lastResult()));
